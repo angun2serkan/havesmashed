@@ -4,8 +4,7 @@ use std::env;
 pub struct Config {
     pub database_url: String,
     pub redis_url: String,
-    pub jwt_private_key: String,
-    pub jwt_public_key: String,
+    pub jwt_secret: String,
     pub jwt_expiry_secs: u64,
     pub admin_api_key: String,
     pub host: String,
@@ -17,8 +16,7 @@ impl Config {
         Self {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             redis_url: env::var("REDIS_URL").expect("REDIS_URL must be set"),
-            jwt_private_key: env::var("JWT_PRIVATE_KEY").expect("JWT_PRIVATE_KEY must be set"),
-            jwt_public_key: env::var("JWT_PUBLIC_KEY").expect("JWT_PUBLIC_KEY must be set"),
+            jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET must be set"),
             jwt_expiry_secs: env::var("JWT_EXPIRY")
                 .unwrap_or_else(|_| "604800".to_string()) // 7 days default
                 .parse()

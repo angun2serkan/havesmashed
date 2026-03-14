@@ -5,7 +5,6 @@ use uuid::Uuid;
 use crate::error::AppError;
 
 const INVITE_TTL_SECS: u64 = 86400; // 24 hours
-const CHALLENGE_TTL_SECS: u64 = 60;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InviteData {
@@ -57,27 +56,4 @@ pub async fn consume_invite(
         }
         None => Ok(None),
     }
-}
-
-/// Store an auth challenge nonce in Redis with 60s TTL.
-pub async fn store_challenge(
-    conn: &mut redis::aio::ConnectionManager,
-    public_key_hash: &str,
-    challenge: &str,
-) -> Result<(), AppError> {
-    let key = format!("auth:challenge:{public_key_hash}");
-    conn.set_ex::<_, _, ()>(&key, challenge, CHALLENGE_TTL_SECS)
-        .await
-        .map_err(AppError::Redis)?;
-    Ok(())
-}
-
-/// Consume an auth challenge atomically. Returns None if expired.
-pub async fn consume_challenge(
-    conn: &mut redis::aio::ConnectionManager,
-    public_key_hash: &str,
-) -> Result<Option<String>, AppError> {
-    let key = format!("auth:challenge:{public_key_hash}");
-    let value: Option<String> = conn.get_del(&key).await.map_err(AppError::Redis)?;
-    Ok(value)
 }

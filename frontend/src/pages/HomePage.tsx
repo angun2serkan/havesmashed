@@ -1,12 +1,12 @@
 import { GlobeView } from "@/components/Globe/GlobeView";
-import { LogEntryForm } from "@/components/LogEntry/LogEntryForm";
+import { DateEntryForm } from "@/components/DateEntry/DateEntryForm";
 import { StatsCards } from "@/components/Stats/StatsCards";
 import { useLogStore } from "@/stores/logStore";
 import { useState, useRef } from "react";
-import { ChevronUp } from "lucide-react";
+import { ChevronUp, Star, Calendar } from "lucide-react";
 
 export function HomePage() {
-  const entries = useLogStore((s) => s.entries);
+  const dates = useLogStore((s) => s.dates);
   const [panelOpen, setPanelOpen] = useState(false);
   const touchStartY = useRef(0);
 
@@ -49,31 +49,36 @@ export function HomePage() {
           <StatsCards />
           <div className="mt-4 space-y-2">
             <h3 className="text-sm font-semibold text-dark-300 uppercase tracking-wider">
-              Recent Entries
+              Recent Dates
             </h3>
-            {entries.length === 0 ? (
+            {dates.length === 0 ? (
               <p className="text-dark-500 text-sm py-4 text-center">
-                Tap a country on the globe to add your first entry
+                Tap a country on the globe to add your first date
               </p>
             ) : (
-              entries.slice(0, 10).map((entry) => (
+              dates.slice(0, 10).map((date) => (
                 <div
-                  key={entry.id}
+                  key={date.id}
                   className="bg-dark-800 border border-dark-700 rounded-lg px-3 py-2"
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-white font-medium">
-                      {entry.cityName}
+                      {date.countryCode}
                     </span>
-                    <span className="text-xs text-dark-500">
-                      {entry.entryDate}
+                    <span className="text-xs text-dark-500 flex items-center gap-1">
+                      <Calendar size={10} />
+                      {date.dateAt}
                     </span>
                   </div>
-                  {entry.rating && (
-                    <span className="text-xs text-neon-500">
-                      {entry.rating}/10
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-xs text-dark-400 capitalize">
+                      {date.gender} / {date.ageRange}
                     </span>
-                  )}
+                    <span className="text-xs text-neon-500 flex items-center gap-1">
+                      <Star size={10} />
+                      {date.rating}/10
+                    </span>
+                  </div>
                 </div>
               ))
             )}
@@ -82,12 +87,12 @@ export function HomePage() {
       </div>
 
       {/* Desktop stats overlay */}
-      <div className="hidden md:block absolute bottom-6 left-6 z-10 w-80">
+      <div className="hidden md:block absolute bottom-6 left-6 z-10 w-96">
         <StatsCards />
       </div>
 
-      {/* Log entry form modal */}
-      <LogEntryForm />
+      {/* Date entry form modal */}
+      <DateEntryForm />
     </div>
   );
 }

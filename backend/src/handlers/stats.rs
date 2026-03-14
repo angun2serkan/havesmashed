@@ -9,9 +9,10 @@ use crate::AppState;
 
 #[derive(Serialize)]
 pub struct StatsResponse {
-    pub total_entries: i64,
+    pub total_dates: i64,
     pub unique_countries: i64,
     pub unique_cities: i64,
+    pub average_rating: Option<f64>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -19,18 +20,18 @@ pub fn router() -> Router<AppState> {
 }
 
 /// GET /api/stats
-/// Returns aggregated stats: total entries, unique countries, unique cities.
 async fn get_stats(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let row = sqlx::query_as::<_, (i64, i64, i64)>(
+    let row = sqlx::query_as::<_, (i64, i64, i64, Option<f64>)>(
         r#"
         SELECT
-            COUNT(*) AS total_entries,
+            COUNT(*) AS total_dates,
             COUNT(DISTINCT country_code) AS unique_countries,
-            COUNT(DISTINCT city_id) AS unique_cities
-        FROM log_entries
+            COUNT(DISTINCT city_id) AS unique_cities,
+            AVG(rating)::float8 AS average_rating
+        FROM dates
         WHERE user_id = $1 AND deleted_at IS NULL
         "#,
     )
@@ -39,9 +40,10 @@ async fn get_stats(
     .await?;
 
     let resp = StatsResponse {
-        total_entries: row.0,
+        total_dates: row.0,
         unique_countries: row.1,
         unique_cities: row.2,
+        average_rating: row.3,
     };
 
     Ok(Json(serde_json::json!({

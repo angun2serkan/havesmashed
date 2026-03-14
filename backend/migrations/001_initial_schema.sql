@@ -9,21 +9,22 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================================
 -- USERS TABLE
--- Stores only the public key. No PII whatsoever.
+-- Auth via 12-word mnemonic phrase (argon2 hash stored).
+-- Nickname required before any meaningful action.
 -- ============================================================
 CREATE TABLE users (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    public_key          BYTEA NOT NULL UNIQUE,              -- Ed25519 public key (32 bytes)
-    public_key_hash     VARCHAR(64) NOT NULL UNIQUE,        -- SHA-256 hash for fast lookup
+    secret_hash         TEXT NOT NULL UNIQUE,                   -- Argon2 hash of 12-word mnemonic
+    nickname            VARCHAR(30) UNIQUE,                     -- Must be set before creating dates/links
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at        TIMESTAMPTZ,
-    invite_count        INTEGER NOT NULL DEFAULT 0           -- lifetime platform invites generated (max 10)
+    invite_count        INTEGER NOT NULL DEFAULT 0
                         CHECK (invite_count >= 0 AND invite_count <= 10),
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,
-    deletion_requested_at TIMESTAMPTZ                       -- 30-day grace period before hard delete
+    deletion_requested_at TIMESTAMPTZ
 );
 
-CREATE INDEX idx_users_pubkey_hash ON users(public_key_hash);
+CREATE INDEX idx_users_nickname ON users(nickname) WHERE nickname IS NOT NULL;
 CREATE INDEX idx_users_active ON users(is_active) WHERE is_active = TRUE;
 CREATE INDEX idx_users_deletion ON users(deletion_requested_at) WHERE deletion_requested_at IS NOT NULL;
 
@@ -45,61 +46,71 @@ CREATE INDEX idx_cities_location ON cities USING GIST(location);
 CREATE INDEX idx_cities_name ON cities(name);
 
 -- ============================================================
--- TAGS
--- Predefined + user-created (hybrid system)
+-- TAGS — Categorized tag system
+-- Categories: meeting, venue, activity, physical_male, physical_female
 -- ============================================================
 CREATE TABLE tags (
     id              SERIAL PRIMARY KEY,
-    name            VARCHAR(100) NOT NULL UNIQUE,
-    is_predefined   BOOLEAN NOT NULL DEFAULT FALSE
+    name            VARCHAR(100) NOT NULL,
+    category        VARCHAR(30) NOT NULL
+                    CHECK (category IN ('meeting', 'venue', 'activity', 'physical_male', 'physical_female')),
+    is_predefined   BOOLEAN NOT NULL DEFAULT FALSE,
+
+    UNIQUE(name, category)
 );
 
--- Seed predefined tags
-INSERT INTO tags (name, is_predefined) VALUES
-    ('App', TRUE),
-    ('Bar/Kulüp', TRUE),
-    ('Arkadaş aracılığıyla', TRUE),
-    ('Tatil', TRUE),
-    ('İş seyahati', TRUE),
-    ('Diğer', TRUE);
+CREATE INDEX idx_tags_category ON tags(category);
 
 -- ============================================================
--- LOG ENTRIES (Encrypted)
--- Sensitive fields encrypted client-side with AES-256-GCM.
--- Server sees only ciphertext for tags/rating/notes.
+-- DATES (formerly log_entries)
+-- A date record with structured fields.
 -- ============================================================
-CREATE TABLE log_entries (
+CREATE TABLE dates (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 
-    -- Geographic data (PostGIS point for spatial queries)
-    -- City-level precision only, never exact coordinates
-    location        GEOMETRY(Point, 4326) NOT NULL,
+    -- Location
     country_code    CHAR(2) NOT NULL,                       -- ISO 3166-1 alpha-2
     city_id         INTEGER NOT NULL REFERENCES cities(id),
 
-    -- Encrypted fields (AES-256-GCM ciphertext + IV + auth tag)
-    encrypted_data  BYTEA NOT NULL,                         -- Contains: { tags[], rating, notes }
-    encryption_iv   BYTEA NOT NULL,                         -- 12-byte IV (unique per entry)
+    -- Date partner info
+    gender          VARCHAR(10) NOT NULL
+                    CHECK (gender IN ('male', 'female', 'other')),
+    age_range       VARCHAR(10) NOT NULL
+                    CHECK (age_range IN ('18-22', '23-27', '28-32', '33-37', '38-42', '43-47', '48+')),
 
-    -- Metadata (non-sensitive, needed for queries)
-    entry_date      DATE NOT NULL,                          -- Unencrypted for time-based queries
+    -- Details
+    description     TEXT,                                   -- Free-form notes about the date
+    rating          INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 10),
+    date_at         DATE NOT NULL,                          -- When the date happened
+
+    -- Timestamps
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ,
-    deleted_at      TIMESTAMPTZ                             -- Soft delete, hard delete after 30 days
+    deleted_at      TIMESTAMPTZ                             -- Soft delete
 );
 
-CREATE INDEX idx_logs_user_id ON log_entries(user_id);
-CREATE INDEX idx_logs_user_date ON log_entries(user_id, entry_date);
-CREATE INDEX idx_logs_location ON log_entries USING GIST(location);
-CREATE INDEX idx_logs_country ON log_entries(user_id, country_code);
-CREATE INDEX idx_logs_city ON log_entries(user_id, city_id);
-CREATE INDEX idx_logs_active ON log_entries(user_id) WHERE deleted_at IS NULL;
-CREATE INDEX idx_logs_soft_deleted ON log_entries(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_dates_user_id ON dates(user_id);
+CREATE INDEX idx_dates_user_date ON dates(user_id, date_at);
+CREATE INDEX idx_dates_country ON dates(user_id, country_code);
+CREATE INDEX idx_dates_city ON dates(user_id, city_id);
+CREATE INDEX idx_dates_active ON dates(user_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_dates_soft_deleted ON dates(deleted_at) WHERE deleted_at IS NOT NULL;
+
+-- ============================================================
+-- DATE_TAGS — Many-to-many between dates and tags
+-- ============================================================
+CREATE TABLE date_tags (
+    date_id         UUID NOT NULL REFERENCES dates(id) ON DELETE CASCADE,
+    tag_id          INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (date_id, tag_id)
+);
+
+CREATE INDEX idx_date_tags_date ON date_tags(date_id);
+CREATE INDEX idx_date_tags_tag ON date_tags(tag_id);
 
 -- ============================================================
 -- CONNECTIONS (Friend relationships)
--- No blocking in MVP — just pending/accepted/rejected
 -- ============================================================
 CREATE TABLE connections (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),

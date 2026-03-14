@@ -3,21 +3,21 @@ import { Copy, Check, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 
 interface SeedPhraseDisplayProps {
-  seedPhrase: string;
+  phrase: string;
   onConfirm: () => void;
 }
 
 export function SeedPhraseDisplay({
-  seedPhrase,
+  phrase,
   onConfirm,
 }: SeedPhraseDisplayProps) {
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  const words = seedPhrase.split(" ");
+  const words = phrase.split(" ");
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(seedPhrase);
+    await navigator.clipboard.writeText(phrase);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

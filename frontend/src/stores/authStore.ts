@@ -5,11 +5,9 @@ import type { User } from "@/types";
 interface AuthState {
   user: User | null;
   token: string | null;
-  encryptionKey: CryptoKey | null;
   isAuthenticated: boolean;
-  setUser: (user: User) => void;
-  setToken: (token: string) => void;
-  setEncryptionKey: (key: CryptoKey) => void;
+  setAuth: (user: User, token: string) => void;
+  setNickname: (nickname: string, newToken: string) => void;
   logout: () => void;
 }
 
@@ -18,16 +16,17 @@ export const useAuthStore = create<AuthState>()(
     (set) => ({
       user: null,
       token: null,
-      encryptionKey: null,
       isAuthenticated: false,
-      setUser: (user) => set({ user, isAuthenticated: true }),
-      setToken: (token) => set({ token }),
-      setEncryptionKey: (key) => set({ encryptionKey: key }),
+      setAuth: (user, token) => set({ user, token, isAuthenticated: true }),
+      setNickname: (nickname, newToken) =>
+        set((state) => ({
+          user: state.user ? { ...state.user, nickname } : null,
+          token: newToken,
+        })),
       logout: () =>
         set({
           user: null,
           token: null,
-          encryptionKey: null,
           isAuthenticated: false,
         }),
     }),

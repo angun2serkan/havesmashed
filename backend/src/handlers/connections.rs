@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ pub struct CreateInviteRequest {
 pub struct InviteResponse {
     pub invite_id: Uuid,
     pub invite_type: InviteType,
+    pub link: String,
     pub expires_in_secs: u64,
 }
 
@@ -62,16 +63,18 @@ pub fn connection_router() -> Router<AppState> {
 // ── Handlers ────────────────────────────────────────────────────
 
 /// POST /api/invites/create
-/// Generate an invite link. Platform invites are limited (3/month, 10 total).
-/// Friend invites have no limit.
+/// Generate an invite link. Requires nickname.
+/// Platform invites are limited (3/month, 10 total). Friend invites are unlimited.
 async fn create_invite(
     State(state): State<AppState>,
     auth: AuthUser,
     Json(body): Json<CreateInviteRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // Require nickname for both invite types
+    auth.require_nickname()?;
+
     // Enforce limits for platform invites only
     if body.invite_type == InviteType::Platform {
-        // Check total lifetime invite count
         let total_invites = sqlx::query_scalar::<_, i32>(
             "SELECT invite_count FROM users WHERE id = $1",
         )
@@ -85,7 +88,6 @@ async fn create_invite(
             )));
         }
 
-        // Check monthly limit via Redis counter
         let month_key = format!(
             "invite:monthly:{}:{}",
             auth.user_id,
@@ -106,13 +108,12 @@ async fn create_invite(
             )));
         }
 
-        // Increment counters
         redis::pipe()
             .cmd("INCR")
             .arg(&month_key)
             .cmd("EXPIRE")
             .arg(&month_key)
-            .arg(86400 * 31) // ~1 month TTL
+            .arg(86400 * 31)
             .query_async::<()>(&mut redis)
             .await
             .map_err(AppError::Redis)?;
@@ -133,9 +134,16 @@ async fn create_invite(
     let mut redis = state.redis.clone();
     invite::store_invite(&mut redis, invite_id, &data).await?;
 
+    // Build link based on type
+    let link = match body.invite_type {
+        InviteType::Platform => format!("havesmashed://invite/{invite_id}"),
+        InviteType::Friend => format!("havesmashed://friend/{invite_id}"),
+    };
+
     let resp = InviteResponse {
         invite_id,
         invite_type: body.invite_type,
+        link,
         expires_in_secs: 86400,
     };
 
@@ -147,7 +155,6 @@ async fn create_invite(
 }
 
 /// POST /api/connections/respond
-/// Accept or reject a pending connection.
 async fn respond_connection(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -159,7 +166,6 @@ async fn respond_connection(
         _ => return Err(AppError::BadRequest("action must be 'accept' or 'reject'".to_string())),
     };
 
-    // Find a pending connection where this user is the responder
     let result = sqlx::query(
         r#"
         UPDATE connections
@@ -185,7 +191,6 @@ async fn respond_connection(
 }
 
 /// GET /api/connections
-/// List connections with optional status filter.
 async fn list_connections(
     State(state): State<AppState>,
     auth: AuthUser,

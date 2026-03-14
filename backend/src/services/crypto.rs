@@ -1,73 +1,51 @@
-use base64::Engine;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use argon2::password_hash::{rand_core::OsRng, SaltString};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::middleware::auth::Claims;
 
-/// Verify an Ed25519 signature against a public key and message.
-pub fn verify_signature(
-    public_key_bytes: &[u8],
-    message: &[u8],
-    signature_bytes: &[u8],
-) -> Result<(), AppError> {
-    let public_key: [u8; 32] = public_key_bytes
-        .try_into()
-        .map_err(|_| AppError::BadRequest("Invalid public key length (expected 32 bytes)".to_string()))?;
-
-    let verifying_key = VerifyingKey::from_bytes(&public_key)
-        .map_err(|_| AppError::BadRequest("Invalid Ed25519 public key".to_string()))?;
-
-    let sig: [u8; 64] = signature_bytes
-        .try_into()
-        .map_err(|_| AppError::BadRequest("Invalid signature length (expected 64 bytes)".to_string()))?;
-
-    let signature = Signature::from_bytes(&sig);
-
-    verifying_key
-        .verify(message, &signature)
-        .map_err(|_| AppError::Unauthorized("Signature verification failed".to_string()))
+/// Hash a mnemonic phrase using Argon2id.
+pub fn hash_secret(phrase: &str) -> Result<String, AppError> {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let hash = argon2
+        .hash_password(phrase.as_bytes(), &salt)
+        .map_err(|e| AppError::Internal(format!("Hash error: {e}")))?;
+    Ok(hash.to_string())
 }
 
-/// Generate a 32-byte random challenge nonce.
-pub fn generate_challenge() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let nonce: [u8; 32] = rng.gen();
-    hex::encode(nonce)
+/// Verify a mnemonic phrase against its Argon2 hash.
+pub fn verify_secret(phrase: &str, hash: &str) -> Result<bool, AppError> {
+    let parsed_hash = PasswordHash::new(hash)
+        .map_err(|e| AppError::Internal(format!("Invalid hash format: {e}")))?;
+    let argon2 = Argon2::default();
+    match argon2.verify_password(phrase.as_bytes(), &parsed_hash) {
+        Ok(()) => Ok(true),
+        Err(argon2::password_hash::Error::Password) => Ok(false),
+        Err(e) => Err(AppError::Internal(format!("Verify error: {e}"))),
+    }
 }
 
-/// Compute SHA-256 hash of public key bytes, returned as hex string.
-pub fn public_key_hash(public_key_bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(public_key_bytes);
-    hex::encode(hasher.finalize())
-}
-
-/// Issue a JWT token signed with EdDSA.
+/// Issue a JWT token signed with HS256.
 pub fn issue_jwt(
     user_id: Uuid,
-    public_key_hash: &str,
-    private_key_b64: &str,
+    nickname: &Option<String>,
+    jwt_secret: &str,
     expiry_secs: u64,
 ) -> Result<String, AppError> {
     let now = chrono::Utc::now().timestamp();
 
     let claims = Claims {
         sub: user_id,
-        r#pub: public_key_hash.to_string(),
+        nickname: nickname.clone(),
         iat: now,
         exp: now + expiry_secs as i64,
     };
 
-    let key_bytes = base64::engine::general_purpose::STANDARD
-        .decode(private_key_b64)
-        .map_err(|_| AppError::Internal("Invalid JWT private key config".to_string()))?;
-
-    let encoding_key = EncodingKey::from_ed_der(&key_bytes);
-    let header = Header::new(Algorithm::EdDSA);
+    let encoding_key = EncodingKey::from_secret(jwt_secret.as_bytes());
+    let header = Header::new(Algorithm::HS256);
 
     encode(&header, &claims, &encoding_key).map_err(AppError::Jwt)
 }

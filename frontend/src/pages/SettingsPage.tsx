@@ -1,13 +1,47 @@
 import { useState } from "react";
-import { Shield, Trash2, Key } from "lucide-react";
+import { Shield, Trash2, User, Pencil, Check, X } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/authStore";
+import { api } from "@/services/api";
 
 export function SettingsPage() {
   const user = useAuthStore((s) => s.user);
+  const setNickname = useAuthStore((s) => s.setNickname);
   const logout = useAuthStore((s) => s.logout);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [editingNickname, setEditingNickname] = useState(false);
+  const [nicknameInput, setNicknameInput] = useState(user?.nickname ?? "");
+  const [nicknameSaving, setNicknameSaving] = useState(false);
+  const [nicknameError, setNicknameError] = useState<string | null>(null);
+
+  const handleSaveNickname = async () => {
+    const trimmed = nicknameInput.trim();
+    if (!trimmed || trimmed.length < 3 || trimmed.length > 20) {
+      setNicknameError("Nickname must be 3-20 characters");
+      return;
+    }
+    setNicknameSaving(true);
+    setNicknameError(null);
+    try {
+      const result = await api.setNickname(trimmed);
+      setNickname(result.nickname, result.token);
+      setEditingNickname(false);
+    } catch (err) {
+      setNicknameError(err instanceof Error ? err.message : "Failed to update nickname");
+    } finally {
+      setNicknameSaving(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    try {
+      await api.deleteAccount();
+      logout();
+    } catch {
+      // Error handling could be added here
+    }
+  };
 
   return (
     <div className="min-h-screen p-4 md:p-8 pb-20 md:pb-8">
@@ -17,22 +51,65 @@ export function SettingsPage() {
         {/* Account Info */}
         <Card>
           <h3 className="flex items-center gap-2 text-sm font-semibold text-white mb-3">
-            <Key size={16} className="text-neon-500" />
+            <User size={16} className="text-neon-500" />
             Account
           </h3>
-          <div className="space-y-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-dark-400">Public Key</span>
-              <span className="text-dark-200 font-mono text-xs truncate max-w-[200px]">
-                {user?.publicKey}
-              </span>
+          <div className="space-y-3 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-dark-400">Nickname</span>
+              {editingNickname ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    value={nicknameInput}
+                    onChange={(e) => setNicknameInput(e.target.value)}
+                    className="bg-dark-900 border border-dark-600 rounded-lg px-2 py-1 text-sm text-white w-36 focus:border-neon-500 focus:outline-none"
+                    maxLength={20}
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleSaveNickname}
+                    disabled={nicknameSaving}
+                    className="text-accent-green hover:text-green-300 transition-colors cursor-pointer"
+                  >
+                    <Check size={16} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingNickname(false);
+                      setNicknameInput(user?.nickname ?? "");
+                      setNicknameError(null);
+                    }}
+                    className="text-dark-400 hover:text-red-400 transition-colors cursor-pointer"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-dark-200 font-medium">
+                    {user?.nickname ?? "Not set"}
+                  </span>
+                  <button
+                    onClick={() => {
+                      setEditingNickname(true);
+                      setNicknameInput(user?.nickname ?? "");
+                    }}
+                    className="text-dark-500 hover:text-neon-400 transition-colors cursor-pointer"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                </div>
+              )}
             </div>
+            {nicknameError && (
+              <p className="text-xs text-red-400">{nicknameError}</p>
+            )}
             <div className="flex justify-between">
               <span className="text-dark-400">Member Since</span>
               <span className="text-dark-200">
                 {user?.createdAt
                   ? new Date(user.createdAt).toLocaleDateString()
-                  : "—"}
+                  : "--"}
               </span>
             </div>
           </div>
@@ -90,6 +167,7 @@ export function SettingsPage() {
                 <Button
                   size="sm"
                   className="bg-red-600 hover:bg-red-500 shadow-none"
+                  onClick={handleDeleteAccount}
                 >
                   Delete Account
                 </Button>

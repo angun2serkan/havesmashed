@@ -1,54 +1,77 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { SeedPhraseDisplay } from "@/components/Auth/SeedPhraseDisplay";
 import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/authStore";
-import {
-  generateSeedPhrase,
-  deriveMasterSeed,
-  deriveSigningKeyPair,
-  deriveEncryptionKey,
-  uint8ToBase64,
-} from "@/services/crypto";
 
-type Step = "generate" | "display" | "done";
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
+
+type Step = "create" | "display";
 
 export function RegisterPage() {
   const navigate = useNavigate();
-  const { setUser, setToken, setEncryptionKey } = useAuthStore();
-  const [step, setStep] = useState<Step>("generate");
+  const [searchParams] = useSearchParams();
+  const { setAuth } = useAuthStore();
+  const [step, setStep] = useState<Step>("create");
   const [seedPhrase, setSeedPhrase] = useState("");
+  const [registrationData, setRegistrationData] = useState<{
+    userId: string;
+    token: string;
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const handleGenerate = () => {
-    const phrase = generateSeedPhrase();
-    setSeedPhrase(phrase);
-    setStep("display");
+  const handleCreate = async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const inviteId = searchParams.get("invite_id");
+      const body: Record<string, string> = {};
+      if (inviteId) body.invite_id = inviteId;
+
+      const res = await fetch(`${API_BASE}/api/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const json = await res.json();
+
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || "Registration failed");
+      }
+
+      setSeedPhrase(json.data.secret_phrase);
+      setRegistrationData({
+        userId: json.data.user_id,
+        token: json.data.token,
+      });
+      setStep("display");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Registration failed. Please try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleConfirm = async () => {
-    try {
-      const masterSeed = deriveMasterSeed(seedPhrase);
-      const { publicKey } = deriveSigningKeyPair(masterSeed);
-      const encKey = await deriveEncryptionKey(masterSeed);
-      const publicKeyB64 = uint8ToBase64(publicKey);
+  const handleConfirm = () => {
+    if (!registrationData) return;
 
-      // In production: api.register(publicKeyB64)
-      // Then auto-login via challenge-response
-
-      setUser({
-        id: crypto.randomUUID(),
-        publicKey: publicKeyB64,
+    setAuth(
+      {
+        id: registrationData.userId,
+        nickname: null,
         createdAt: new Date().toISOString(),
-        lastSeenAt: new Date().toISOString(),
         inviteCount: 0,
-      });
-      setToken("demo-jwt-token");
-      setEncryptionKey(encKey);
-      navigate("/");
-    } catch {
-      setError("Registration failed. Please try again.");
-    }
+        isActive: true,
+      },
+      registrationData.token,
+    );
+
+    navigate("/nickname");
   };
 
   return (
@@ -64,7 +87,7 @@ export function RegisterPage() {
         </div>
 
         <div className="bg-dark-800 border border-dark-600 rounded-xl p-6">
-          {step === "generate" && (
+          {step === "create" && (
             <div className="text-center space-y-6">
               <div>
                 <h2 className="text-xl font-bold text-white mb-2">
@@ -75,15 +98,20 @@ export function RegisterPage() {
                   phrase that acts as your identity.
                 </p>
               </div>
-              <Button onClick={handleGenerate} className="w-full" size="lg">
-                Generate Recovery Phrase
+              <Button
+                onClick={handleCreate}
+                disabled={loading}
+                className="w-full"
+                size="lg"
+              >
+                {loading ? "Creating Account..." : "Create Account"}
               </Button>
             </div>
           )}
 
           {step === "display" && (
             <SeedPhraseDisplay
-              seedPhrase={seedPhrase}
+              phrase={seedPhrase}
               onConfirm={handleConfirm}
             />
           )}

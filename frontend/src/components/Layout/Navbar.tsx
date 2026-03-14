@@ -1,7 +1,7 @@
 import { Link, useLocation } from "react-router-dom";
 import {
   Globe,
-  LayoutDashboard,
+  CalendarHeart,
   Users,
   Settings,
   LogOut,
@@ -10,14 +10,14 @@ import { useAuthStore } from "@/stores/authStore";
 
 const navItems = [
   { path: "/", icon: Globe, label: "Globe" },
-  { path: "/dashboard", icon: LayoutDashboard, label: "Stats" },
+  { path: "/dates", icon: CalendarHeart, label: "Dates" },
   { path: "/friends", icon: Users, label: "Friends" },
   { path: "/settings", icon: Settings, label: "Settings" },
 ];
 
 export function Navbar() {
   const location = useLocation();
-  const { isAuthenticated, logout } = useAuthStore();
+  const { isAuthenticated, user, logout } = useAuthStore();
 
   if (!isAuthenticated) return null;
 
@@ -46,7 +46,12 @@ export function Navbar() {
             </Link>
           );
         })}
-        <div className="mt-auto">
+        <div className="mt-auto flex flex-col items-center gap-2">
+          {user?.nickname && (
+            <span className="text-[10px] text-dark-400 truncate max-w-[56px] text-center">
+              {user.nickname}
+            </span>
+          )}
           <button
             onClick={logout}
             className="flex items-center justify-center w-10 h-10 rounded-lg text-dark-400 hover:text-red-400 hover:bg-dark-800 transition-all cursor-pointer"

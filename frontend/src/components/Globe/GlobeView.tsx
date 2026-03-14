@@ -27,17 +27,17 @@ export function GlobeView() {
   const [countries, setCountries] = useState<CountryFeature[]>([]);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [zoomedCountry, setZoomedCountry] = useState<string | null>(null);
-  const entries = useLogStore((s) => s.entries);
+  const dates = useLogStore((s) => s.dates);
   const setSelectedCountry = useLogStore((s) => s.setSelectedCountry);
 
-  // Build country log counts
-  const countryLogCounts = useMemo(() => {
+  // Build country date counts
+  const countryDateCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const entry of entries) {
-      counts[entry.countryCode] = (counts[entry.countryCode] ?? 0) + 1;
+    for (const d of dates) {
+      counts[d.countryCode] = (counts[d.countryCode] ?? 0) + 1;
     }
     return counts;
-  }, [entries]);
+  }, [dates]);
 
   // Load GeoJSON
   useEffect(() => {
@@ -218,31 +218,31 @@ export function GlobeView() {
           polygonCapColor={(d) => {
             const feat = d as CountryFeature;
             const code = feat.properties?.ISO_A2;
-            const count = code ? (countryLogCounts[code] ?? 0) : 0;
+            const count = code ? (countryDateCounts[code] ?? 0) : 0;
             return getVisitedColor(count);
           }}
           polygonSideColor={() => "rgba(20, 20, 40, 0.3)"}
           polygonStrokeColor={(d) => {
             const feat = d as CountryFeature;
             const code = feat.properties?.ISO_A2;
-            const count = code ? (countryLogCounts[code] ?? 0) : 0;
+            const count = code ? (countryDateCounts[code] ?? 0) : 0;
             return count > 0 ? VISITED_STROKE : STROKE_COLOR;
           }}
           polygonAltitude={(d) => {
             const feat = d as CountryFeature;
             const code = feat.properties?.ISO_A2;
             if (code === zoomedCountry) return 0.02;
-            const count = code ? (countryLogCounts[code] ?? 0) : 0;
+            const count = code ? (countryDateCounts[code] ?? 0) : 0;
             return count > 0 ? 0.01 : 0.005;
           }}
           polygonLabel={(d) => {
             const feat = d as CountryFeature;
             const name = feat.properties?.ADMIN ?? "Unknown";
             const code = feat.properties?.ISO_A2;
-            const count = code ? (countryLogCounts[code] ?? 0) : 0;
+            const count = code ? (countryDateCounts[code] ?? 0) : 0;
             return `<div class="bg-dark-800/90 backdrop-blur px-3 py-1.5 rounded-lg border border-dark-600 text-sm">
               <span class="font-semibold text-white">${name}</span>
-              ${count > 0 ? `<span class="ml-2 text-neon-500">${count} ${count === 1 ? "entry" : "entries"}</span>` : ""}
+              ${count > 0 ? `<span class="ml-2 text-neon-500">${count} ${count === 1 ? "date" : "dates"}</span>` : ""}
             </div>`;
           }}
           onPolygonClick={handlePolygonClick}

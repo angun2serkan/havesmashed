@@ -1,4 +1,4 @@
-import { Globe, MapPin, Flag } from "lucide-react";
+import { Globe, MapPin, Flag, Star } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { useLogStore } from "@/stores/logStore";
 
@@ -7,8 +7,8 @@ export function StatsCards() {
 
   const cards = [
     {
-      label: "Total Entries",
-      value: stats.totalEntries,
+      label: "Total Dates",
+      value: stats.totalDates,
       icon: MapPin,
       color: "text-neon-500",
     },
@@ -24,10 +24,19 @@ export function StatsCards() {
       icon: Globe,
       color: "text-accent-purple",
     },
+    {
+      label: "Avg Rating",
+      value:
+        stats.averageRating !== null
+          ? `${stats.averageRating.toFixed(1)}/10`
+          : "--",
+      icon: Star,
+      color: "text-yellow-400",
+    },
   ];
 
   return (
-    <div className="grid grid-cols-3 gap-3">
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       {cards.map(({ label, value, icon: Icon, color }) => (
         <Card key={label} className="text-center">
           <Icon size={24} className={`mx-auto mb-2 ${color}`} />

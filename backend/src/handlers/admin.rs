@@ -10,7 +10,7 @@ use crate::AppState;
 #[derive(Serialize)]
 pub struct AdminMetrics {
     pub total_users: i64,
-    pub total_entries: i64,
+    pub total_dates: i64,
     pub daily_active_users: i64,
 }
 
@@ -19,12 +19,10 @@ pub fn router() -> Router<AppState> {
 }
 
 /// GET /api/admin/metrics
-/// Requires admin API key via X-Admin-Key header.
 async fn get_metrics(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Verify admin key
     let admin_key = headers
         .get("x-admin-key")
         .and_then(|v| v.to_str().ok())
@@ -40,8 +38,8 @@ async fn get_metrics(
     .fetch_one(&state.db)
     .await?;
 
-    let total_entries = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM log_entries WHERE deleted_at IS NULL",
+    let total_dates = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM dates WHERE deleted_at IS NULL",
     )
     .fetch_one(&state.db)
     .await?;
@@ -54,7 +52,7 @@ async fn get_metrics(
 
     let resp = AdminMetrics {
         total_users,
-        total_entries,
+        total_dates,
         daily_active_users,
     };
 

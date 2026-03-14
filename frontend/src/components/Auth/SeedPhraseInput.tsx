@@ -1,24 +1,19 @@
 import { useState } from "react";
 import { KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { validateSeedPhraseWords } from "@/services/crypto";
 
 interface SeedPhraseInputProps {
-  onSubmit: (seedPhrase: string) => void;
+  onSubmit: (secretPhrase: string) => void;
   loading?: boolean;
 }
 
 export function SeedPhraseInput({ onSubmit, loading }: SeedPhraseInputProps) {
   const [phrase, setPhrase] = useState("");
-  const [error, setError] = useState("");
+
+  const wordCount = phrase.trim().split(/\s+/).filter(Boolean).length;
 
   const handleSubmit = () => {
     const trimmed = phrase.trim().toLowerCase();
-    if (!validateSeedPhraseWords(trimmed)) {
-      setError("Invalid seed phrase. Please check your words.");
-      return;
-    }
-    setError("");
     onSubmit(trimmed);
   };
 
@@ -36,14 +31,11 @@ export function SeedPhraseInput({ onSubmit, loading }: SeedPhraseInputProps) {
 
       <textarea
         value={phrase}
-        onChange={(e) => {
-          setPhrase(e.target.value);
-          setError("");
-        }}
+        onChange={(e) => setPhrase(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
-            handleSubmit();
+            if (wordCount === 12) handleSubmit();
           }
         }}
         placeholder="word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12"
@@ -51,11 +43,13 @@ export function SeedPhraseInput({ onSubmit, loading }: SeedPhraseInputProps) {
         className="w-full bg-dark-900 border border-dark-600 rounded-lg px-4 py-3 text-sm font-mono text-white placeholder:text-dark-500 focus:outline-none focus:border-neon-500 resize-none"
       />
 
-      {error && <p className="text-red-400 text-sm">{error}</p>}
+      <p className="text-xs text-dark-400 text-right">
+        {wordCount}/12 words
+      </p>
 
       <Button
         onClick={handleSubmit}
-        disabled={loading || phrase.trim().split(/\s+/).length !== 12}
+        disabled={loading || wordCount !== 12}
         className="w-full"
         size="lg"
       >

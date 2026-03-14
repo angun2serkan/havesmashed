@@ -44,9 +44,9 @@ interface CitySelectorProps {
 
 export function CitySelector({ countryCode, onClose }: CitySelectorProps) {
   const [search, setSearch] = useState("");
-  const openLogForm = useLogStore((s) => s.openLogForm);
+  const openDateForm = useLogStore((s) => s.openDateForm);
   const setSelectedCity = useLogStore((s) => s.setSelectedCity);
-  const entries = useLogStore((s) => s.entries);
+  const dates = useLogStore((s) => s.dates);
 
   const cities = SAMPLE_CITIES[countryCode] ?? [];
 
@@ -57,15 +57,15 @@ export function CitySelector({ countryCode, onClose }: CitySelectorProps) {
     );
   }, [cities, search]);
 
-  const cityEntryCounts = useMemo(() => {
+  const cityDateCounts = useMemo(() => {
     const counts: Record<number, number> = {};
-    for (const entry of entries) {
-      if (entry.countryCode === countryCode) {
-        counts[entry.cityId] = (counts[entry.cityId] ?? 0) + 1;
+    for (const d of dates) {
+      if (d.countryCode === countryCode) {
+        counts[d.cityId] = (counts[d.cityId] ?? 0) + 1;
       }
     }
     return counts;
-  }, [entries, countryCode]);
+  }, [dates, countryCode]);
 
   const handleCityClick = (city: City) => {
     setSelectedCity({
@@ -74,7 +74,7 @@ export function CitySelector({ countryCode, onClose }: CitySelectorProps) {
       lat: city.latitude,
       lng: city.longitude,
     });
-    openLogForm();
+    openDateForm();
   };
 
   return (
@@ -114,7 +114,7 @@ export function CitySelector({ countryCode, onClose }: CitySelectorProps) {
           </p>
         ) : (
           filteredCities.map((city) => {
-            const count = cityEntryCounts[city.id] ?? 0;
+            const count = cityDateCounts[city.id] ?? 0;
             return (
               <button
                 key={city.id}

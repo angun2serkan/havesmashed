@@ -4,8 +4,6 @@ mod handlers;
 mod middleware;
 mod services;
 
-use std::sync::Arc;
-
 use axum::Router;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::cors::{Any, CorsLayer};
@@ -22,7 +20,7 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    dotenvy::from_filename(".env.dev").ok();
 
     tracing_subscriber::fmt()
         .with_env_filter(

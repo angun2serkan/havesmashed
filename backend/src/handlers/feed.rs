@@ -9,7 +9,6 @@ use crate::AppState;
 
 #[derive(Serialize)]
 pub struct FeedResponse {
-    /// Aggregate message: "3 friends added entries this week"
     pub message: String,
     pub friends_active_this_week: i64,
 }
@@ -19,12 +18,11 @@ pub fn router() -> Router<AppState> {
 }
 
 /// GET /api/feed
-/// Aggregate feed: "N friends added entries this week".
+/// Aggregate feed: "N friends added dates this week".
 async fn get_feed(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Get IDs of accepted friends
     let friend_count = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(DISTINCT friend_id)
@@ -40,7 +38,7 @@ async fn get_feed(
         ) AS friends
         WHERE EXISTS (
             SELECT 1
-            FROM log_entries
+            FROM dates
             WHERE user_id = friends.friend_id
               AND deleted_at IS NULL
               AND created_at >= NOW() - INTERVAL '7 days'
@@ -52,11 +50,11 @@ async fn get_feed(
     .await?;
 
     let message = if friend_count == 0 {
-        "No friends added entries this week".to_string()
+        "No friends added dates this week".to_string()
     } else if friend_count == 1 {
-        "1 friend added entries this week".to_string()
+        "1 friend added dates this week".to_string()
     } else {
-        format!("{friend_count} friends added entries this week")
+        format!("{friend_count} friends added dates this week")
     };
 
     let resp = FeedResponse {

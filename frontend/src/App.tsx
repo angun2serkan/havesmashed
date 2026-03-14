@@ -7,10 +7,23 @@ import { RegisterPage } from "@/pages/RegisterPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { FriendsPage } from "@/pages/FriendsPage";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { NicknamePage } from "@/pages/NicknamePage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const user = useAuthStore((s) => s.user);
+
   if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (!user?.nickname) return <Navigate to="/nickname" replace />;
+  return <>{children}</>;
+}
+
+function NicknameRoute({ children }: { children: React.ReactNode }) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const user = useAuthStore((s) => s.user);
+
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (user?.nickname) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
@@ -46,6 +59,22 @@ export default function App() {
             <GuestRoute>
               <RegisterPage />
             </GuestRoute>
+          }
+        />
+        <Route
+          path="/nickname"
+          element={
+            <NicknameRoute>
+              <NicknamePage />
+            </NicknameRoute>
+          }
+        />
+        <Route
+          path="/dates"
+          element={
+            <ProtectedRoute>
+              <DashboardPage />
+            </ProtectedRoute>
           }
         />
         <Route

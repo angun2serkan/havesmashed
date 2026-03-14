@@ -1,68 +1,67 @@
 export interface User {
   id: string;
-  publicKey: string;
+  nickname: string | null;
   createdAt: string;
-  lastSeenAt: string | null;
+  lastSeenAt?: string;
   inviteCount: number;
+  isActive: boolean;
 }
 
-export interface LogEntry {
+export interface DateEntry {
   id: string;
-  userId: string;
   countryCode: string;
   cityId: number;
-  cityName: string;
-  countryName: string;
-  entryDate: string;
-  latitude: number;
-  longitude: number;
-  // Decrypted client-side
-  tags: string[];
-  rating: number | null;
-  notes: string;
+  gender: "male" | "female" | "other";
+  ageRange: string;
+  description: string | null;
+  rating: number; // 1-10
+  dateAt: string;
+  tagIds: number[];
   createdAt: string;
-  updatedAt: string | null;
+  updatedAt?: string;
 }
 
-export interface LogEntryEncrypted {
-  id: string;
-  userId: string;
-  countryCode: string;
-  cityId: number;
-  entryDate: string;
-  encryptedData: string; // base64
-  encryptionIv: string; // base64
-  createdAt: string;
-  updatedAt: string | null;
-}
-
-export interface Connection {
-  id: string;
-  requesterId: string;
-  responderId: string;
-  status: "pending" | "accepted" | "rejected" | "blocked";
-  createdAt: string;
-  updatedAt: string | null;
-}
-
-export interface Stats {
-  totalEntries: number;
-  uniqueCountries: number;
-  uniqueCities: number;
+export interface Tag {
+  id: number;
+  name: string;
+  category: "meeting" | "venue" | "activity" | "physical_male" | "physical_female";
+  isPredefined: boolean;
 }
 
 export interface City {
   id: number;
   name: string;
   countryCode: string;
-  latitude: number;
   longitude: number;
-  population: number | null;
+  latitude: number;
+  population?: number;
+}
+
+export interface Stats {
+  totalDates: number;
+  uniqueCountries: number;
+  uniqueCities: number;
+  averageRating: number | null;
+}
+
+export interface Connection {
+  id: string;
+  requesterId: string;
+  responderId: string;
+  status: "pending" | "accepted" | "rejected";
+  createdAt: string;
+}
+
+export interface InviteResponse {
+  inviteId: string;
+  inviteType: "platform" | "friend";
+  link: string;
+  expiresInSecs: number;
 }
 
 export interface ApiResponse<T> {
   success: boolean;
-  data: T | null;
+  data: T;
   error: string | null;
 }
 
@@ -71,20 +70,7 @@ export interface CountryFeature {
   properties: {
     ISO_A2: string;
     ADMIN: string;
-    logCount?: number;
+    dateCount?: number;
   };
   geometry: GeoJSON.Geometry;
 }
-
-export const PREDEFINED_TAGS = [
-  "App",
-  "Bar/Club",
-  "Through Friends",
-  "Holiday",
-  "Business Trip",
-  "School",
-  "Work",
-  "Online",
-  "Event",
-  "Other",
-] as const;

@@ -2,47 +2,54 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { SeedPhraseInput } from "@/components/Auth/SeedPhraseInput";
 import { useAuthStore } from "@/stores/authStore";
-import {
-  deriveMasterSeed,
-  deriveSigningKeyPair,
-  deriveEncryptionKey,
-  uint8ToBase64,
-} from "@/services/crypto";
+
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
 export function LoginPage() {
   const navigate = useNavigate();
-  const { setUser, setToken, setEncryptionKey } = useAuthStore();
+  const { setAuth } = useAuthStore();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const handleLogin = async (seedPhrase: string) => {
+  const handleLogin = async (secretPhrase: string) => {
     setLoading(true);
     setError("");
 
     try {
-      const masterSeed = deriveMasterSeed(seedPhrase);
-      const { publicKey } = deriveSigningKeyPair(masterSeed);
-      const encKey = await deriveEncryptionKey(masterSeed);
-      const publicKeyB64 = uint8ToBase64(publicKey);
-
-      // In production:
-      // 1. api.getChallenge(publicKeyB64)
-      // 2. signChallenge(challenge, timestamp, privateKey)
-      // 3. api.verify({ publicKey, challenge, timestamp, signature })
-
-      // Demo: simulate successful login
-      setUser({
-        id: crypto.randomUUID(),
-        publicKey: publicKeyB64,
-        createdAt: new Date().toISOString(),
-        lastSeenAt: new Date().toISOString(),
-        inviteCount: 0,
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret_phrase: secretPhrase }),
       });
-      setToken("demo-jwt-token");
-      setEncryptionKey(encKey);
-      navigate("/");
-    } catch {
-      setError("Failed to sign in. Please check your seed phrase.");
+
+      const json = await res.json();
+
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || "Login failed");
+      }
+
+      const { token, user_id, nickname } = json.data;
+
+      setAuth(
+        {
+          id: user_id,
+          nickname: nickname || null,
+          createdAt: new Date().toISOString(),
+          inviteCount: 0,
+          isActive: true,
+        },
+        token,
+      );
+
+      if (!nickname) {
+        navigate("/nickname");
+      } else {
+        navigate("/");
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to sign in. Please check your recovery phrase.",
+      );
     } finally {
       setLoading(false);
     }

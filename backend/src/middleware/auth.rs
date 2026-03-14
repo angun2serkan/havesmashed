@@ -1,4 +1,4 @@
-use axum::extract::{FromRequestParts, State};
+use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use crate::AppState;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: Uuid,
-    pub r#pub: String,
+    pub nickname: Option<String>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -19,7 +19,16 @@ pub struct Claims {
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: Uuid,
-    pub public_key_hash: String,
+    pub nickname: Option<String>,
+}
+
+impl AuthUser {
+    /// Returns an error if the user has not set a nickname yet.
+    pub fn require_nickname(&self) -> Result<&str, AppError> {
+        self.nickname
+            .as_deref()
+            .ok_or_else(|| AppError::Forbidden("You must set a nickname before performing this action".to_string()))
+    }
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -36,21 +45,15 @@ impl FromRequestParts<AppState> for AuthUser {
             .and_then(|v| v.strip_prefix("Bearer "))
             .ok_or_else(|| AppError::Unauthorized("Missing authorization header".to_string()))?;
 
-        let pub_key_bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &state.config.jwt_public_key,
-        )
-        .map_err(|_| AppError::Internal("Invalid JWT public key config".to_string()))?;
-
-        let decoding_key = DecodingKey::from_ed_der(&pub_key_bytes);
-        let mut validation = Validation::new(Algorithm::EdDSA);
+        let decoding_key = DecodingKey::from_secret(state.config.jwt_secret.as_bytes());
+        let mut validation = Validation::new(Algorithm::HS256);
         validation.set_required_spec_claims(&["sub", "exp", "iat"]);
 
         let token_data = decode::<Claims>(token, &decoding_key, &validation)?;
 
         Ok(AuthUser {
             user_id: token_data.claims.sub,
-            public_key_hash: token_data.claims.r#pub,
+            nickname: token_data.claims.nickname,
         })
     }
 }
