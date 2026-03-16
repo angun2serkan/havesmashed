@@ -18,9 +18,14 @@ export function HomePage() {
   const [smashNotifications, setSmashNotifications] = useState<Notification[]>([]);
   const [showSmash, setShowSmash] = useState(false);
 
+  const setDates = useLogStore((s) => s.setDates);
+  const setStats = useLogStore((s) => s.setStats);
+
   useEffect(() => {
+    api.getDates().then((res) => setDates(res.dates)).catch(() => {});
+    api.getStats().then(setStats).catch(() => {});
     api.getFriendDates().then(setFriendDates).catch(() => {});
-  }, [setFriendDates]);
+  }, [setDates, setStats, setFriendDates]);
 
   useEffect(() => {
     // Check for friend_date notifications on mount
