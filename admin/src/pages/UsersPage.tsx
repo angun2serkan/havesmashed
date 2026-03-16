@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { Search, ArrowUpDown } from 'lucide-react'
+import { Search, ArrowUpDown, Copy, Check } from 'lucide-react'
 import { adminApi } from '@/services/api'
 
 interface UserRow {
@@ -20,6 +20,13 @@ export default function UsersPage() {
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('created_at')
   const [sortAsc, setSortAsc] = useState(false)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  const copyId = (id: string) => {
+    navigator.clipboard.writeText(id)
+    setCopiedId(id)
+    setTimeout(() => setCopiedId(null), 1500)
+  }
 
   useEffect(() => {
     adminApi
@@ -146,9 +153,16 @@ export default function UsersPage() {
                     <span className="text-white font-medium">
                       {user.nickname ?? 'Anonymous'}
                     </span>
-                    <p className="text-dark-500 text-xs font-mono mt-0.5">
-                      {user.id.slice(0, 8)}...
-                    </p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-dark-500 text-xs font-mono">{user.id}</span>
+                      <button
+                        onClick={() => copyId(user.id)}
+                        className="p-0.5 rounded text-dark-600 hover:text-neon-400 transition-colors cursor-pointer"
+                        title="Copy ID"
+                      >
+                        {copiedId === user.id ? <Check size={12} className="text-accent-green" /> : <Copy size={12} />}
+                      </button>
+                    </div>
                   </div>
                 </td>
                 <td className="px-4 py-3 text-dark-300">{user.date_count}</td>

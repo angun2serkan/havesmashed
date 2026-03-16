@@ -1,22 +1,57 @@
 import { GlobeView } from "@/components/Globe/GlobeView";
 import { DateEntryForm } from "@/components/DateEntry/DateEntryForm";
 import { StatsCards } from "@/components/Stats/StatsCards";
+import { SmashOverlay } from "@/components/SmashOverlay";
 import { useLogStore } from "@/stores/logStore";
 import { useFriendStore } from "@/stores/friendStore";
 import { api } from "@/services/api";
 import { useState, useRef, useEffect } from "react";
 import { ChevronUp, Star, Calendar, Smile, Dumbbell, MessageCircle } from "lucide-react";
 import { getCountryName } from "@/utils/countryName";
+import type { Notification } from "@/types";
 
 export function HomePage() {
   const dates = useLogStore((s) => s.dates);
   const setFriendDates = useFriendStore((s) => s.setFriendDates);
   const [panelOpen, setPanelOpen] = useState(false);
   const touchStartY = useRef(0);
+  const [smashNotifications, setSmashNotifications] = useState<Notification[]>([]);
+  const [showSmash, setShowSmash] = useState(false);
 
   useEffect(() => {
     api.getFriendDates().then(setFriendDates).catch(() => {});
   }, [setFriendDates]);
+
+  useEffect(() => {
+    // Check for friend_date notifications on mount
+    const lastCheck = sessionStorage.getItem("lastSmashCheck");
+    const now = Date.now();
+
+    // Only check once per session (don't show again if user navigates away and back)
+    if (lastCheck && now - parseInt(lastCheck) < 60000) return;
+
+    api
+      .getNotifications()
+      .then((notifs) => {
+        const friendDateNotifs = notifs.filter(
+          (n) => n.notificationType === "friend_date" && !n.isRead,
+        );
+        if (friendDateNotifs.length > 0) {
+          setSmashNotifications(friendDateNotifs);
+          setShowSmash(true);
+          sessionStorage.setItem("lastSmashCheck", String(now));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleSmashDismiss = () => {
+    setShowSmash(false);
+    // Mark all friend_date notifications as read
+    for (const n of smashNotifications) {
+      api.markNotificationRead(n.id).catch(() => {});
+    }
+  };
 
   const handleTouchStart = (e: React.TouchEvent) => {
     touchStartY.current = e.touches[0]!.clientY;
@@ -34,6 +69,13 @@ export function HomePage() {
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
     >
+      {showSmash && smashNotifications.length > 0 && (
+        <SmashOverlay
+          notifications={smashNotifications}
+          onDismiss={handleSmashDismiss}
+        />
+      )}
+
       {/* Globe fills entire screen */}
       <GlobeView />
 

@@ -59,8 +59,9 @@ export function SettingsPage() {
     <div className="min-h-screen p-4 md:p-8 pb-20 md:pb-8">
       <h1 className="text-2xl font-bold text-white mb-6">Settings</h1>
 
-      <div className="space-y-4 max-w-lg">
-        {/* Account Info */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Left column */}
+        <div className="space-y-4">
         <Card>
           <h3 className="flex items-center gap-2 text-sm font-semibold text-white mb-3">
             <User size={16} className="text-neon-500" />
@@ -142,6 +143,10 @@ export function SettingsPage() {
           )}
         </Card>
 
+        </div>
+
+        {/* Right column */}
+        <div className="space-y-4">
         {/* Privacy */}
         <Card>
           <h3 className="flex items-center gap-2 text-sm font-semibold text-white mb-3">
@@ -222,6 +227,7 @@ export function SettingsPage() {
         >
           Sign Out
         </Button>
+        </div>
       </div>
     </div>
   );

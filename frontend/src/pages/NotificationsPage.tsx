@@ -3,6 +3,29 @@ import { Bell } from "lucide-react";
 import { api } from "@/services/api";
 import type { Notification } from "@/types";
 
+function typeBadge(notificationType: string) {
+  switch (notificationType) {
+    case "friend_date":
+      return (
+        <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-neon-500/20 text-neon-500">
+          Friend Date
+        </span>
+      );
+    case "badge":
+      return (
+        <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-yellow-500/20 text-yellow-400">
+          Badge
+        </span>
+      );
+    default:
+      return (
+        <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-dark-600/50 text-dark-400">
+          System
+        </span>
+      );
+  }
+}
+
 function relativeTime(dateStr: string): string {
   const now = Date.now();
   const then = new Date(dateStr).getTime();
@@ -74,15 +97,18 @@ export function NotificationsPage() {
               }`}
             >
               <div className="flex items-start justify-between gap-2">
-                <h3
-                  className={`text-sm ${
-                    n.isRead
-                      ? "text-dark-300 font-normal"
-                      : "text-white font-bold"
-                  }`}
-                >
-                  {n.title}
-                </h3>
+                <div className="flex items-center gap-2">
+                  <h3
+                    className={`text-sm ${
+                      n.isRead
+                        ? "text-dark-300 font-normal"
+                        : "text-white font-bold"
+                    }`}
+                  >
+                    {n.title}
+                  </h3>
+                  {typeBadge(n.notificationType)}
+                </div>
                 <span className="text-[10px] text-dark-500 whitespace-nowrap shrink-0">
                   {relativeTime(n.createdAt)}
                 </span>

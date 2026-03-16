@@ -51,7 +51,7 @@ export function Navbar() {
   return (
     <>
       {/* Desktop sidebar */}
-      <nav className="hidden md:flex fixed left-0 top-0 h-full w-16 flex-col items-center py-6 bg-dark-900/80 backdrop-blur-md border-r border-dark-700 z-40 gap-2">
+      <nav className="hidden md:flex fixed left-0 top-0 h-full w-20 flex-col items-center py-6 bg-dark-900/80 backdrop-blur-md border-r border-dark-700 z-40 gap-2">
         <div className="text-neon-500 font-bold text-xl mb-8 text-glow">H</div>
         {navItems.map(({ path, icon: Icon, label }) => {
           const isActive = location.pathname === path;
@@ -89,7 +89,7 @@ export function Navbar() {
             </span>
           </Link>
           {user?.nickname && (
-            <span className="text-[10px] text-dark-400 truncate max-w-[56px] text-center">
+            <span className="text-[10px] text-dark-400 text-center px-1 break-all leading-tight max-w-[72px]">
               {user.nickname}
             </span>
           )}

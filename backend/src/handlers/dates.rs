@@ -236,6 +236,36 @@ async fn create_date(
     // Check for new badges
     let new_badges = crate::handlers::badges::check_and_award_badges(&state.db, auth.user_id).await?;
 
+    // Notify friends about new date
+    let city_name_clone = city_name.clone();
+    let user_nickname = auth.nickname.clone().unwrap_or_else(|| "Someone".to_string());
+    let friends = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT CASE
+            WHEN requester_id = $1 THEN responder_id
+            ELSE requester_id
+        END
+        FROM connections
+        WHERE (requester_id = $1 OR responder_id = $1) AND status = 'accepted'
+        "#,
+    )
+    .bind(auth.user_id)
+    .fetch_all(&state.db)
+    .await?;
+
+    for friend_id in friends {
+        let title = format!("{} yeni bir date girdi!", user_nickname);
+        let message = format!("{} - {}", city_name_clone, body.date_at);
+        sqlx::query(
+            "INSERT INTO notifications (user_id, title, message, notification_type) VALUES ($1, $2, $3, 'friend_date')"
+        )
+        .bind(friend_id)
+        .bind(&title)
+        .bind(&message)
+        .execute(&state.db)
+        .await?;
+    }
+
     let resp = DateResponse {
         id,
         country_code: body.country_code,

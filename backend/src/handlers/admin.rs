@@ -79,6 +79,7 @@ pub struct CreateNotificationRequest {
     pub user_id: Option<Uuid>,
     pub title: String,
     pub message: String,
+    pub notification_type: Option<String>,
 }
 
 // ── Router ─────────────────────────────────────────────────────
@@ -587,12 +588,15 @@ async fn send_notification(
     verify_admin(&headers, &state.config)?;
 
     use sqlx::Row;
+    let notification_type = body.notification_type.as_deref().unwrap_or("system");
+
     let row = sqlx::query(
-        "INSERT INTO notifications (user_id, title, message) VALUES ($1, $2, $3) RETURNING id, created_at",
+        "INSERT INTO notifications (user_id, title, message, notification_type) VALUES ($1, $2, $3, $4) RETURNING id, created_at",
     )
     .bind(body.user_id)
     .bind(&body.title)
     .bind(&body.message)
+    .bind(notification_type)
     .fetch_one(&state.db)
     .await?;
 
@@ -606,6 +610,7 @@ async fn send_notification(
             "user_id": body.user_id,
             "title": body.title,
             "message": body.message,
+            "notification_type": notification_type,
             "is_broadcast": body.user_id.is_none(),
             "created_at": created_at,
         },
@@ -624,7 +629,7 @@ async fn list_notifications(
     let rows = sqlx::query(
         r#"
         SELECT n.id, n.user_id, n.title, n.message, n.is_read, n.created_at,
-               u.nickname AS user_nickname
+               n.notification_type, u.nickname AS user_nickname
         FROM notifications n
         LEFT JOIN users u ON u.id = n.user_id
         ORDER BY n.created_at DESC
@@ -643,6 +648,7 @@ async fn list_notifications(
                 "title": r.get::<String, _>("title"),
                 "message": r.get::<String, _>("message"),
                 "is_read": r.get::<bool, _>("is_read"),
+                "notification_type": r.get::<String, _>("notification_type"),
                 "is_broadcast": r.get::<Option<Uuid>, _>("user_id").is_none(),
                 "user_nickname": r.get::<Option<String>, _>("user_nickname"),
                 "created_at": r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),

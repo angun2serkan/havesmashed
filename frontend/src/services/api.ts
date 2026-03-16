@@ -344,6 +344,7 @@ export const api = {
       title: n.title,
       message: n.message,
       isRead: n.is_read,
+      notificationType: n.notification_type ?? "system",
       createdAt: n.created_at,
     }));
   },

@@ -105,6 +105,7 @@ export interface Notification {
   title: string;
   message: string;
   isRead: boolean;
+  notificationType: string; // 'system' | 'friend_date' | 'badge'
   createdAt: string;
 }
 

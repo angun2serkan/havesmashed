@@ -1,13 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { StatsCards } from "@/components/Stats/StatsCards";
 import { Card } from "@/components/ui/Card";
 import { useLogStore } from "@/stores/logStore";
 import { api } from "@/services/api";
-import { MapPin, Star, Calendar, Loader2, Smile, Dumbbell, MessageCircle } from "lucide-react";
+import { MapPin, Star, Calendar, Loader2, Smile, Dumbbell, MessageCircle, Filter, X } from "lucide-react";
 import { loadTags, getTagById } from "@/data/tags";
 import { getCountryName } from "@/utils/countryName";
 
-/** Color mapping for tag categories */
 function getTagColor(category: string): string {
   if (category === "meeting") return "bg-accent-cyan/15 text-accent-cyan border-accent-cyan/30";
   if (category === "venue") return "bg-neon-500/15 text-neon-400 border-neon-500/30";
@@ -15,15 +14,25 @@ function getTagColor(category: string): string {
   return "bg-yellow-500/15 text-yellow-400 border-yellow-500/30";
 }
 
+const GENDERS = ["all", "female", "male", "other"] as const;
+
 export function DashboardPage() {
   const dates = useLogStore((s) => s.dates);
   const setDates = useLogStore((s) => s.setDates);
   const setStats = useLogStore((s) => s.setStats);
   const [loading, setLoading] = useState(true);
 
+  // Filter state
+  const [showFilters, setShowFilters] = useState(false);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [gender, setGender] = useState<string>("all");
+  const [minRating, setMinRating] = useState<number>(0);
+  const [country, setCountry] = useState("");
+  const [city, setCity] = useState("");
+
   useEffect(() => {
     let cancelled = false;
-
     async function fetchData() {
       try {
         const [datesRes, statsRes] = await Promise.all([
@@ -36,15 +45,54 @@ export function DashboardPage() {
           setStats(statsRes);
         }
       } catch {
-        // silently fail — user sees empty state
+        // silently fail
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
-
     fetchData();
     return () => { cancelled = true; };
   }, [setDates, setStats]);
+
+  // Distinct values for dropdowns
+  const countries = useMemo(() => {
+    const codes = [...new Set(dates.map((d) => d.countryCode))].sort();
+    return codes.map((c) => ({ code: c, name: getCountryName(c) }));
+  }, [dates]);
+
+  const cities = useMemo(() => {
+    const cityMap = new Map<string, string>();
+    for (const d of dates) {
+      if (d.cityName && (!country || d.countryCode === country)) {
+        cityMap.set(d.cityName, d.countryCode);
+      }
+    }
+    return [...cityMap.keys()].sort();
+  }, [dates, country]);
+
+  // Apply filters
+  const filteredDates = useMemo(() => {
+    return dates.filter((d) => {
+      if (dateFrom && d.dateAt < dateFrom) return false;
+      if (dateTo && d.dateAt > dateTo) return false;
+      if (gender !== "all" && d.gender !== gender) return false;
+      if (minRating > 0 && d.rating < minRating) return false;
+      if (country && d.countryCode !== country) return false;
+      if (city && d.cityName !== city) return false;
+      return true;
+    });
+  }, [dates, dateFrom, dateTo, gender, minRating, country, city]);
+
+  const hasActiveFilters = dateFrom || dateTo || gender !== "all" || minRating > 0 || country || city;
+
+  const clearFilters = () => {
+    setDateFrom("");
+    setDateTo("");
+    setGender("all");
+    setMinRating(0);
+    setCountry("");
+    setCity("");
+  };
 
   return (
     <div className="min-h-screen p-4 md:p-8 pb-20 md:pb-8">
@@ -53,25 +101,151 @@ export function DashboardPage() {
       <StatsCards />
 
       <div className="mt-6">
-        <h2 className="text-sm font-semibold text-dark-300 uppercase tracking-wider mb-3">
-          All Dates
-        </h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-dark-300 uppercase tracking-wider">
+            All Dates
+            {hasActiveFilters && (
+              <span className="ml-2 text-neon-400 normal-case">
+                ({filteredDates.length} of {dates.length})
+              </span>
+            )}
+          </h2>
+          <div className="flex items-center gap-2">
+            {hasActiveFilters && (
+              <button
+                onClick={clearFilters}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-red-400 hover:text-red-300 transition-colors cursor-pointer"
+              >
+                <X size={12} />
+                Clear
+              </button>
+            )}
+            <button
+              onClick={() => setShowFilters(!showFilters)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                showFilters || hasActiveFilters
+                  ? "bg-neon-500/20 text-neon-400 border border-neon-500/30"
+                  : "bg-dark-800 text-dark-400 border border-dark-700 hover:border-dark-500"
+              }`}
+            >
+              <Filter size={12} />
+              Filters
+              {hasActiveFilters && (
+                <span className="w-4 h-4 rounded-full bg-neon-500 text-white text-[10px] flex items-center justify-center">
+                  {[dateFrom || dateTo, gender !== "all", minRating > 0, country, city].filter(Boolean).length}
+                </span>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Filter Panel */}
+        {showFilters && (
+          <Card className="p-4 mb-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              {/* Date From */}
+              <div>
+                <label className="block text-[10px] text-dark-400 uppercase tracking-wider mb-1">From</label>
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="w-full px-2 py-1.5 bg-dark-900 border border-dark-600 rounded-lg text-xs text-white focus:outline-none focus:border-neon-500 [color-scheme:dark]"
+                />
+              </div>
+
+              {/* Date To */}
+              <div>
+                <label className="block text-[10px] text-dark-400 uppercase tracking-wider mb-1">To</label>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="w-full px-2 py-1.5 bg-dark-900 border border-dark-600 rounded-lg text-xs text-white focus:outline-none focus:border-neon-500 [color-scheme:dark]"
+                />
+              </div>
+
+              {/* Gender */}
+              <div>
+                <label className="block text-[10px] text-dark-400 uppercase tracking-wider mb-1">Gender</label>
+                <select
+                  value={gender}
+                  onChange={(e) => setGender(e.target.value)}
+                  className="w-full px-2 py-1.5 bg-dark-900 border border-dark-600 rounded-lg text-xs text-white focus:outline-none focus:border-neon-500 appearance-none"
+                >
+                  {GENDERS.map((g) => (
+                    <option key={g} value={g}>{g === "all" ? "All" : g.charAt(0).toUpperCase() + g.slice(1)}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Min Rating */}
+              <div>
+                <label className="block text-[10px] text-dark-400 uppercase tracking-wider mb-1">Min Rating</label>
+                <select
+                  value={minRating}
+                  onChange={(e) => setMinRating(Number(e.target.value))}
+                  className="w-full px-2 py-1.5 bg-dark-900 border border-dark-600 rounded-lg text-xs text-white focus:outline-none focus:border-neon-500 appearance-none"
+                >
+                  <option value={0}>Any</option>
+                  {[1,2,3,4,5,6,7,8,9,10].map((n) => (
+                    <option key={n} value={n}>{n}+</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Country */}
+              <div>
+                <label className="block text-[10px] text-dark-400 uppercase tracking-wider mb-1">Country</label>
+                <select
+                  value={country}
+                  onChange={(e) => { setCountry(e.target.value); setCity(""); }}
+                  className="w-full px-2 py-1.5 bg-dark-900 border border-dark-600 rounded-lg text-xs text-white focus:outline-none focus:border-neon-500 appearance-none"
+                >
+                  <option value="">All</option>
+                  {countries.map((c) => (
+                    <option key={c.code} value={c.code}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* City */}
+              <div>
+                <label className="block text-[10px] text-dark-400 uppercase tracking-wider mb-1">City</label>
+                <select
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  className="w-full px-2 py-1.5 bg-dark-900 border border-dark-600 rounded-lg text-xs text-white focus:outline-none focus:border-neon-500 appearance-none"
+                >
+                  <option value="">All</option>
+                  {cities.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </Card>
+        )}
 
         {loading ? (
           <div className="flex items-center justify-center py-16">
             <Loader2 size={32} className="text-neon-500 animate-spin" />
           </div>
-        ) : dates.length === 0 ? (
+        ) : filteredDates.length === 0 ? (
           <Card className="text-center py-12">
             <MapPin size={40} className="mx-auto text-dark-500 mb-3" />
-            <p className="text-dark-400">No dates yet</p>
+            <p className="text-dark-400">
+              {hasActiveFilters ? "No dates match your filters" : "No dates yet"}
+            </p>
             <p className="text-dark-500 text-sm mt-1">
-              Go to the globe and tap a country to start logging
+              {hasActiveFilters
+                ? "Try adjusting your filters"
+                : "Go to the globe and tap a country to start logging"}
             </p>
           </Card>
         ) : (
           <div className="space-y-3">
-            {dates.map((date) => (
+            {filteredDates.map((date) => (
               <Card key={date.id} className="p-4">
                 <div className="flex items-start gap-3">
                   <div className="w-10 h-10 rounded-lg bg-neon-500/10 flex items-center justify-center shrink-0">

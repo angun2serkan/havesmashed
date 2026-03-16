@@ -1,12 +1,19 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, put};
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
 use crate::AppState;
+
+#[derive(Deserialize)]
+pub struct NotificationsQuery {
+    pub notification_type: Option<String>,
+    pub unread_only: Option<bool>,
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -18,24 +25,43 @@ pub fn router() -> Router<AppState> {
 /// GET /api/notifications
 /// Returns the user's personal notifications + broadcast notifications,
 /// ordered by created_at DESC, limit 50.
+/// Supports query params: notification_type, unread_only
 async fn get_notifications(
     auth: AuthUser,
     State(state): State<AppState>,
+    Query(params): Query<NotificationsQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     use sqlx::Row;
 
-    let rows = sqlx::query(
+    let mut query = String::from(
         r#"
-        SELECT id, title, message, is_read, created_at, user_id
+        SELECT id, title, message, is_read, created_at, user_id, notification_type
         FROM notifications
-        WHERE user_id = $1 OR user_id IS NULL
-        ORDER BY created_at DESC
-        LIMIT 50
+        WHERE (user_id = $1 OR user_id IS NULL)
         "#,
-    )
-    .bind(auth.user_id)
-    .fetch_all(&state.db)
-    .await?;
+    );
+    let mut param_idx = 2u32;
+
+    if params.notification_type.is_some() {
+        query.push_str(&format!(" AND notification_type = ${param_idx}"));
+        param_idx += 1;
+    }
+
+    if params.unread_only.unwrap_or(false) {
+        query.push_str(" AND is_read = FALSE");
+    }
+
+    let _ = param_idx; // suppress unused warning
+
+    query.push_str(" ORDER BY created_at DESC LIMIT 50");
+
+    let mut q = sqlx::query(&query).bind(auth.user_id);
+
+    if let Some(ref notification_type) = params.notification_type {
+        q = q.bind(notification_type);
+    }
+
+    let rows = q.fetch_all(&state.db).await?;
 
     let notifications: Vec<serde_json::Value> = rows
         .iter()
@@ -46,6 +72,7 @@ async fn get_notifications(
                 "message": r.get::<String, _>("message"),
                 "is_read": r.get::<bool, _>("is_read"),
                 "is_broadcast": r.get::<Option<Uuid>, _>("user_id").is_none(),
+                "notification_type": r.get::<String, _>("notification_type"),
                 "created_at": r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
             })
         })
