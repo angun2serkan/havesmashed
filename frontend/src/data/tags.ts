@@ -2,15 +2,9 @@ export type TagDefinition = { id: number; name: string; category: string };
 
 export type Gender = "male" | "female" | "other";
 
-export const AGE_RANGES = [
-  "18-22",
-  "23-27",
-  "28-32",
-  "33-37",
-  "38-42",
-  "43-47",
-  "48+",
-] as const;
+export const AGE_RANGES = ["18-22", "23-27", "28-32", "33-37", "38-42", "43+"] as const;
+
+export const HEIGHT_RANGES = ["-150", "150-160", "160-165", "165-170", "170-175", "175-180", "180-185", "185-190", "190-195", "195-200", "200+"] as const;
 
 // Tags will be loaded from API
 let tagsCache: TagDefinition[] = [];

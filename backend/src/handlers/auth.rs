@@ -13,8 +13,8 @@ use crate::AppState;
 
 #[derive(Deserialize)]
 pub struct RegisterRequest {
-    /// Optional platform invite token (required for registration).
-    pub invite_token: Option<String>,
+    /// Platform invite token — required for registration.
+    pub invite_token: String,
 }
 
 #[derive(Serialize)]
@@ -77,16 +77,14 @@ async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // If invite_token is provided, consume it (platform invite)
-    if let Some(ref invite_token) = body.invite_token {
-        let mut redis = state.redis.clone();
-        let invite_data = invite::consume_invite(&mut redis, invite_token).await?;
-        match invite_data {
-            None => return Err(AppError::Gone("Invite link expired or already used".to_string())),
-            Some(data) => {
-                if data.invite_type != invite::InviteType::Platform {
-                    return Err(AppError::BadRequest("Invalid invite type for registration".to_string()));
-                }
+    // Consume the invite token (required)
+    let mut redis = state.redis.clone();
+    let invite_data = invite::consume_invite(&mut redis, &body.invite_token).await?;
+    match invite_data {
+        None => return Err(AppError::Gone("Invite link expired or already used".to_string())),
+        Some(data) => {
+            if data.invite_type != invite::InviteType::Platform {
+                return Err(AppError::BadRequest("Invalid invite type for registration".to_string()));
             }
         }
     }

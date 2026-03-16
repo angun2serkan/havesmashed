@@ -19,8 +19,8 @@ pub fn router() -> Router<AppState> {
 async fn get_all_badges(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let badges = sqlx::query_as::<_, (i32, String, String, String, String, i32)>(
-        "SELECT id, name, description, icon, category, threshold FROM badges ORDER BY id"
+    let badges = sqlx::query_as::<_, (i32, String, String, String, String, i32, String)>(
+        "SELECT id, name, description, icon, category, threshold, gender FROM badges ORDER BY id"
     )
     .fetch_all(&state.db)
     .await?;
@@ -28,7 +28,8 @@ async fn get_all_badges(
     let result: Vec<serde_json::Value> = badges.iter().map(|b| {
         json!({
             "id": b.0, "name": b.1, "description": b.2,
-            "icon": b.3, "category": b.4, "threshold": b.5
+            "icon": b.3, "category": b.4, "threshold": b.5,
+            "gender": b.6
         })
     }).collect();
 
@@ -67,7 +68,7 @@ async fn get_friend_badges(
     use sqlx::Row;
     let rows = sqlx::query(
         r#"
-        SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, ub.earned_at
+        SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, b.gender, ub.earned_at
         FROM badges b
         JOIN user_badges ub ON ub.badge_id = b.id
         WHERE ub.user_id = $1
@@ -86,6 +87,7 @@ async fn get_friend_badges(
             "icon": r.get::<String, _>("icon"),
             "category": r.get::<String, _>("category"),
             "threshold": r.get::<i32, _>("threshold"),
+            "gender": r.get::<String, _>("gender"),
             "earned": true,
             "earned_at": r.get::<chrono::DateTime<chrono::Utc>, _>("earned_at")
         })
@@ -99,7 +101,7 @@ async fn fetch_user_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<serde
     use sqlx::Row;
     let rows = sqlx::query(
         r#"
-        SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold,
+        SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, b.gender,
                ub.earned_at
         FROM badges b
         LEFT JOIN user_badges ub ON ub.badge_id = b.id AND ub.user_id = $1
@@ -119,6 +121,7 @@ async fn fetch_user_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<serde
             "icon": r.get::<String, _>("icon"),
             "category": r.get::<String, _>("category"),
             "threshold": r.get::<i32, _>("threshold"),
+            "gender": r.get::<String, _>("gender"),
             "earned": earned_at.is_some(),
             "earned_at": earned_at
         })
@@ -131,23 +134,42 @@ async fn fetch_user_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<serde
 pub async fn check_and_award_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<String>, AppError> {
     let mut newly_earned: Vec<String> = Vec::new();
 
-    // Count dates
-    let date_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM dates WHERE user_id = $1 AND deleted_at IS NULL"
+    // Count dates by gender of partner
+    let female_date_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM dates WHERE user_id = $1 AND gender = 'female' AND deleted_at IS NULL"
     ).bind(user_id).fetch_one(db).await?;
 
-    // Count unique countries
+    let male_date_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM dates WHERE user_id = $1 AND gender = 'male' AND deleted_at IS NULL"
+    ).bind(user_id).fetch_one(db).await?;
+
+    let other_date_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM dates WHERE user_id = $1 AND gender = 'other' AND deleted_at IS NULL"
+    ).bind(user_id).fetch_one(db).await?;
+
+    let total_date_count = female_date_count + male_date_count + other_date_count;
+
+    // Has dated both genders?
+    let has_both = female_date_count > 0 && male_date_count > 0;
+    let has_other = other_date_count > 0;
+    // Total dates that qualify for LGBT (both genders combined, when has_both)
+    let lgbt_qualifying_count = if has_both || has_other {
+        total_date_count
+    } else {
+        0
+    };
+
+    // Country/city counts
     let country_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(DISTINCT country_code) FROM dates WHERE user_id = $1 AND deleted_at IS NULL"
     ).bind(user_id).fetch_one(db).await?;
 
-    // Count unique cities
     let city_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(DISTINCT city_id) FROM dates WHERE user_id = $1 AND deleted_at IS NULL"
     ).bind(user_id).fetch_one(db).await?;
 
     // Average rating (only if >= 5 dates)
-    let avg_rating: Option<f64> = if date_count >= 5 {
+    let avg_rating: Option<f64> = if total_date_count >= 5 {
         sqlx::query_scalar::<_, Option<f64>>(
             "SELECT AVG(rating)::float8 FROM dates WHERE user_id = $1 AND deleted_at IS NULL"
         ).bind(user_id).fetch_one(db).await?
@@ -155,48 +177,58 @@ pub async fn check_and_award_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<
         None
     };
 
-    // Count friends
+    // Friend count
     let friend_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM connections WHERE (requester_id = $1 OR responder_id = $1) AND status = 'accepted'"
     ).bind(user_id).fetch_one(db).await?;
 
-    // Get all badges
+    // Get all badges and already earned
     use sqlx::Row;
-    let all_badges = sqlx::query("SELECT id, category, threshold FROM badges ORDER BY id")
+    let all_badges = sqlx::query("SELECT id, name, category, threshold, gender FROM badges ORDER BY id")
         .fetch_all(db).await?;
-
-    // Get already earned badge IDs
     let earned_ids: Vec<i32> = sqlx::query_scalar::<_, i32>(
         "SELECT badge_id FROM user_badges WHERE user_id = $1"
     ).bind(user_id).fetch_all(db).await?;
 
     for badge in &all_badges {
         let badge_id: i32 = badge.get("id");
+        if earned_ids.contains(&badge_id) { continue; }
+
         let category: String = badge.get("category");
         let threshold: i32 = badge.get("threshold");
+        let gender: String = badge.get("gender");
 
-        if earned_ids.contains(&badge_id) {
-            continue; // already earned
-        }
-
-        let qualifies = match category.as_str() {
-            "dates" => date_count >= threshold as i64,
-            "explore" => {
-                // badges 7,8 = countries, badges 9,10 = cities
-                if badge_id <= 8 { country_count >= threshold as i64 }
+        let qualifies = match (category.as_str(), gender.as_str()) {
+            // Male badges: count of dates with women (gender='female')
+            ("dates", "male") => female_date_count >= threshold as i64,
+            // Female badges: count of dates with men (gender='male')
+            ("dates", "female") => male_date_count >= threshold as i64,
+            // LGBT badges: must have dated both genders OR other
+            ("dates", "lgbt") => {
+                if threshold == 1 {
+                    // "Merakli" -- first other date OR has dated both genders
+                    has_both || has_other
+                } else {
+                    // Higher thresholds require has_both/has_other AND total count
+                    (has_both || has_other) && lgbt_qualifying_count >= threshold as i64
+                }
+            },
+            // Explore badges
+            ("explore", _) => {
+                if badge_id <= 15 { country_count >= threshold as i64 }
                 else { city_count >= threshold as i64 }
             },
-            "quality" => avg_rating.map_or(false, |r| r >= threshold as f64),
-            "social" => friend_count >= threshold as i64,
+            // Quality
+            ("quality", _) => avg_rating.map_or(false, |r| r >= threshold as f64),
+            // Social
+            ("social", _) => friend_count >= threshold as i64,
             _ => false,
         };
 
         if qualifies {
             sqlx::query("INSERT INTO user_badges (user_id, badge_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
                 .bind(user_id).bind(badge_id).execute(db).await?;
-
-            let name: String = sqlx::query_scalar("SELECT name FROM badges WHERE id = $1")
-                .bind(badge_id).fetch_one(db).await?;
+            let name: String = badge.get("name");
             newly_earned.push(name);
         }
     }

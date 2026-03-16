@@ -1,6 +1,7 @@
-import { useEffect, useState, useMemo, type FormEvent, type ChangeEvent } from 'react'
-import { Plus, Pencil, Trash2, X, Check, Upload, Filter } from 'lucide-react'
+import { useEffect, useState, useMemo, useRef, type FormEvent, type ChangeEvent } from 'react'
+import { Plus, Pencil, Trash2, X, Check, Upload, Filter, Smile } from 'lucide-react'
 import { adminApi } from '@/services/api'
+import EmojiPicker, { Theme } from 'emoji-picker-react'
 
 interface BadgeRow {
   id: number
@@ -10,16 +11,17 @@ interface BadgeRow {
   category: string
   threshold: number
   image_url: string | null
-  gender: 'male' | 'female' | 'both'
+  gender: 'male' | 'female' | 'lgbt' | 'both'
 }
 
 const categories = ['dates', 'explore', 'social', 'quality'] as const
-const genderOptions = ['both', 'male', 'female'] as const
-type GenderFilter = 'all' | 'male' | 'female' | 'both'
+const genderOptions = ['both', 'male', 'female', 'lgbt'] as const
+type GenderFilter = 'all' | 'male' | 'female' | 'lgbt' | 'both'
 
 const genderSymbol: Record<string, string> = {
   male: '\u2642',
   female: '\u2640',
+  lgbt: '\uD83C\uDF08',
   both: '\u26A5',
 }
 
@@ -43,6 +45,20 @@ export default function BadgesPage() {
   const [editForm, setEditForm] = useState(emptyForm)
   const [editUploading, setEditUploading] = useState(false)
   const [genderFilter, setGenderFilter] = useState<GenderFilter>('all')
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [showEditEmojiPicker, setShowEditEmojiPicker] = useState(false)
+  const emojiRef = useRef<HTMLDivElement>(null)
+  const editEmojiRef = useRef<HTMLDivElement>(null)
+
+  // Close emoji picker on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (emojiRef.current && !emojiRef.current.contains(e.target as Node)) setShowEmojiPicker(false)
+      if (editEmojiRef.current && !editEmojiRef.current.contains(e.target as Node)) setShowEditEmojiPicker(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
 
   function fetchBadges() {
     adminApi
@@ -159,6 +175,7 @@ export default function BadgesPage() {
     { label: 'All', value: 'all' },
     { label: 'Male', value: 'male' },
     { label: 'Female', value: 'female' },
+    { label: 'LGBT', value: 'lgbt' },
     { label: 'Both', value: 'both' },
   ]
 
@@ -180,13 +197,32 @@ export default function BadgesPage() {
               required
               className={inputClass}
             />
-            <input
-              placeholder="Icon (emoji)"
-              value={form.icon}
-              onChange={(e) => setForm({ ...form, icon: e.target.value })}
-              required
-              className={inputClass}
-            />
+            <div className="relative" ref={emojiRef}>
+              <button
+                type="button"
+                onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                className={`${inputClass} w-full flex items-center gap-2 cursor-pointer`}
+              >
+                {form.icon ? (
+                  <span className="text-xl">{form.icon}</span>
+                ) : (
+                  <>
+                    <Smile size={16} className="text-dark-500" />
+                    <span className="text-dark-500">Icon</span>
+                  </>
+                )}
+              </button>
+              {showEmojiPicker && (
+                <div className="absolute top-full left-0 mt-1 z-50">
+                  <EmojiPicker
+                    theme={Theme.DARK}
+                    onEmojiClick={(e) => { setForm({ ...form, icon: e.emoji }); setShowEmojiPicker(false); }}
+                    width={320}
+                    height={400}
+                  />
+                </div>
+              )}
+            </div>
             <select
               value={form.category}
               onChange={(e) => setForm({ ...form, category: e.target.value })}
@@ -213,7 +249,7 @@ export default function BadgesPage() {
             >
               {genderOptions.map((g) => (
                 <option key={g} value={g}>
-                  {g.charAt(0).toUpperCase() + g.slice(1)}
+                  {g === 'male' ? '♂ Male (kadınla date)' : g === 'female' ? '♀ Female (erkekle date)' : g === 'lgbt' ? '🌈 LGBT (her iki cins)' : '⚥ General'}
                 </option>
               ))}
             </select>
@@ -318,12 +354,32 @@ export default function BadgesPage() {
                   className={`${inputClass} w-full text-sm`}
                   placeholder="Name"
                 />
-                <input
-                  value={editForm.icon}
-                  onChange={(e) => setEditForm({ ...editForm, icon: e.target.value })}
-                  className={`${inputClass} w-full text-sm`}
-                  placeholder="Icon"
-                />
+                <div className="relative" ref={editEmojiRef}>
+                  <button
+                    type="button"
+                    onClick={() => setShowEditEmojiPicker(!showEditEmojiPicker)}
+                    className={`${inputClass} w-full flex items-center gap-2 cursor-pointer text-sm`}
+                  >
+                    {editForm.icon ? (
+                      <span className="text-lg">{editForm.icon}</span>
+                    ) : (
+                      <>
+                        <Smile size={14} className="text-dark-500" />
+                        <span className="text-dark-500">Icon</span>
+                      </>
+                    )}
+                  </button>
+                  {showEditEmojiPicker && (
+                    <div className="absolute top-full left-0 mt-1 z-50">
+                      <EmojiPicker
+                        theme={Theme.DARK}
+                        onEmojiClick={(e) => { setEditForm({ ...editForm, icon: e.emoji }); setShowEditEmojiPicker(false); }}
+                        width={300}
+                        height={350}
+                      />
+                    </div>
+                  )}
+                </div>
                 <input
                   value={editForm.description}
                   onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
@@ -356,7 +412,7 @@ export default function BadgesPage() {
                   >
                     {genderOptions.map((g) => (
                       <option key={g} value={g}>
-                        {g.charAt(0).toUpperCase() + g.slice(1)}
+                        {g === 'male' ? '♂ Male' : g === 'female' ? '♀ Female' : g === 'lgbt' ? '🌈 LGBT' : '⚥ General'}
                       </option>
                     ))}
                   </select>
@@ -413,10 +469,10 @@ export default function BadgesPage() {
                       <img
                         src={badge.image_url}
                         alt={badge.name}
-                        className="w-10 h-10 rounded-lg object-cover border border-dark-600"
+                        className="w-16 h-16 rounded-xl object-contain"
                       />
                     ) : (
-                      <span className="text-3xl">{badge.icon}</span>
+                      <span className="text-4xl">{badge.icon}</span>
                     )}
                     <div>
                       <h4 className="font-semibold text-white">{badge.name}</h4>
@@ -433,12 +489,16 @@ export default function BadgesPage() {
                                 ? 'rgba(59, 130, 246, 0.15)'
                                 : badge.gender === 'female'
                                 ? 'rgba(236, 72, 153, 0.15)'
+                                : badge.gender === 'lgbt'
+                                ? 'rgba(168, 85, 247, 0.15)'
                                 : 'rgba(168, 85, 247, 0.15)',
                             color:
                               badge.gender === 'male'
                                 ? '#60a5fa'
                                 : badge.gender === 'female'
                                 ? '#f472b6'
+                                : badge.gender === 'lgbt'
+                                ? '#c084fc'
                                 : '#c084fc',
                           }}
                         >

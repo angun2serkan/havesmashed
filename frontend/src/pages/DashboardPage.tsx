@@ -267,6 +267,7 @@ export function DashboardPage() {
                     <div className="flex items-center gap-3 text-xs text-dark-400 mb-2">
                       <span className="capitalize">{date.gender}</span>
                       <span>{date.ageRange}</span>
+                      {date.heightRange && <span>{date.heightRange} cm</span>}
                       <span className="flex items-center gap-1">
                         <Calendar size={10} />
                         {date.dateAt}

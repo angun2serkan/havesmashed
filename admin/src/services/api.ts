@@ -67,4 +67,7 @@ export const adminApi = {
 
   // Users
   getUsers: () => request<Array<{ id: string; nickname: string | null; date_count: number; friend_count: number; created_at: string; last_seen_at: string | null; is_active: boolean }>>('/admin/users'),
+
+  // Invites
+  createPlatformInvite: () => request<{ token: string; link: string; expires_in_secs: number }>('/admin/invites', { method: 'POST' }),
 }

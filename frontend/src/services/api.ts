@@ -22,6 +22,7 @@ function mapDate(d: any): DateEntry {
     cityName: d.city_name ?? "",
     gender: d.gender,
     ageRange: d.age_range,
+    heightRange: d.height_range ?? null,
     personNickname: d.person_nickname ?? null,
     description: d.description ?? null,
     rating: d.rating,
@@ -124,6 +125,7 @@ export const api = {
     city_id: number;
     gender: "male" | "female" | "other";
     age_range: string;
+    height_range?: string;
     person_nickname?: string;
     description?: string;
     rating: number;
@@ -184,6 +186,7 @@ export const api = {
     city_id: number;
     gender: "male" | "female" | "other";
     age_range: string;
+    height_range: string;
     description: string;
     rating: number;
     date_at: string;
@@ -317,6 +320,7 @@ export const api = {
       threshold: b.threshold,
       earned: b.earned,
       earnedAt: b.earned_at ?? null,
+      gender: b.gender ?? "both",
     }));
   },
 
@@ -332,6 +336,7 @@ export const api = {
       threshold: b.threshold,
       earned: b.earned ?? true,
       earnedAt: b.earned_at ?? null,
+      gender: b.gender ?? "both",
     }));
   },
 

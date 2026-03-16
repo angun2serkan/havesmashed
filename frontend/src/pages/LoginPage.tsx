@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { SeedPhraseInput } from "@/components/Auth/SeedPhraseInput";
 import { useAuthStore } from "@/stores/authStore";
 import { api } from "@/services/api";
@@ -85,14 +85,8 @@ export function LoginPage() {
           )}
         </div>
 
-        <p className="text-center text-dark-400 text-sm mt-6">
-          Don't have an account?{" "}
-          <Link
-            to="/register"
-            className="text-neon-500 hover:text-neon-400 transition-colors"
-          >
-            Register
-          </Link>
+        <p className="text-center text-dark-500 text-xs mt-6">
+          Registration is invite-only. Ask a friend or admin for an invite link.
         </p>
       </div>
     </div>

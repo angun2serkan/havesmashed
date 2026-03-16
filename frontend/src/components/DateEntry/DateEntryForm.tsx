@@ -8,6 +8,7 @@ import {
   Heart,
   Sparkles,
   User,
+  Ruler,
   Eye,
   MessageCircle,
   Plus,
@@ -20,6 +21,7 @@ import { useLogStore } from "@/stores/logStore";
 import { api } from "@/services/api";
 import {
   AGE_RANGES,
+  HEIGHT_RANGES,
   loadTags,
   getTagsByCategory,
   addTagToCache,
@@ -181,6 +183,7 @@ export function DateEntryForm() {
 
   const [gender, setGender] = useState<Gender | null>(null);
   const [ageRange, setAgeRange] = useState("");
+  const [heightRange, setHeightRange] = useState("");
   const [personNickname, setPersonNickname] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<Set<number>>(new Set());
   const [dateAt, setDateAt] = useState(
@@ -285,6 +288,7 @@ export function DateEntryForm() {
   const resetForm = () => {
     setGender(null);
     setAgeRange("");
+    setHeightRange("");
     setPersonNickname("");
     setSelectedTagIds(new Set());
     setDateAt(new Date().toISOString().split("T")[0]!);
@@ -311,6 +315,7 @@ export function DateEntryForm() {
         city_id: selectedCity.id,
         gender,
         age_range: ageRange,
+        height_range: heightRange || undefined,
         person_nickname: personNickname.trim() || undefined,
         description: description.trim() || undefined,
         rating,
@@ -401,7 +406,27 @@ export function DateEntryForm() {
           </select>
         </div>
 
-        {/* 2.5. Kisi (Person Nickname) */}
+        {/* 2.5 Boy (Height Range) */}
+        <div>
+          <label className="flex items-center gap-2 text-sm font-medium text-dark-200 mb-2">
+            <Ruler size={14} />
+            Boy
+          </label>
+          <select
+            value={heightRange}
+            onChange={(e) => setHeightRange(e.target.value)}
+            className="w-full bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-neon-500 transition-colors appearance-none cursor-pointer"
+          >
+            <option value="" disabled>Select height range</option>
+            {HEIGHT_RANGES.map((range) => (
+              <option key={range} value={range}>
+                {range} cm
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* 3. Kisi (Person Nickname) */}
         <div>
           <label className="flex items-center gap-2 text-sm font-medium text-dark-200 mb-2">
             <User size={14} />

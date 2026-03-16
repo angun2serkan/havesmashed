@@ -14,6 +14,7 @@ export interface DateEntry {
   cityName: string;
   gender: "male" | "female" | "other";
   ageRange: string;
+  heightRange: string | null;
   personNickname: string | null;
   description: string | null;
   rating: number; // 1-10
@@ -98,6 +99,7 @@ export interface Badge {
   threshold: number;
   earned: boolean;
   earnedAt: string | null;
+  gender: "male" | "female" | "lgbt" | "both";
 }
 
 export interface Notification {

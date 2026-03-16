@@ -12,7 +12,8 @@ use crate::AppState;
 
 const MAX_DATES_PER_USER: i64 = 1000;
 const VALID_GENDERS: &[&str] = &["male", "female", "other"];
-const VALID_AGE_RANGES: &[&str] = &["18-22", "23-27", "28-32", "33-37", "38-42", "43-47", "48+"];
+const VALID_AGE_RANGES: &[&str] = &["18-22", "23-27", "28-32", "33-37", "38-42", "43+"];
+const VALID_HEIGHT_RANGES: &[&str] = &["-150", "150-160", "160-165", "165-170", "170-175", "175-180", "180-185", "185-190", "190-195", "195-200", "200+"];
 
 // ── Request / Response types ────────────────────────────────────
 
@@ -22,6 +23,7 @@ pub struct CreateDateRequest {
     pub city_id: i32,
     pub gender: String,
     pub age_range: String,
+    pub height_range: Option<String>,
     pub description: Option<String>,
     pub person_nickname: Option<String>,
     pub rating: i32,
@@ -38,6 +40,7 @@ pub struct UpdateDateRequest {
     pub city_id: Option<i32>,
     pub gender: Option<String>,
     pub age_range: Option<String>,
+    pub height_range: Option<String>,
     pub description: Option<String>,
     pub person_nickname: Option<String>,
     pub rating: Option<i32>,
@@ -64,6 +67,7 @@ pub struct DateResponse {
     pub latitude: f64,
     pub gender: String,
     pub age_range: String,
+    pub height_range: Option<String>,
     pub description: Option<String>,
     pub person_nickname: Option<String>,
     pub rating: i32,
@@ -108,6 +112,18 @@ fn validate_age_range(age_range: &str) -> Result<(), AppError> {
             "age_range must be one of: {}",
             VALID_AGE_RANGES.join(", ")
         )));
+    }
+    Ok(())
+}
+
+fn validate_optional_height(height: &Option<String>) -> Result<(), AppError> {
+    if let Some(ref h) = height {
+        if !VALID_HEIGHT_RANGES.contains(&h.as_str()) {
+            return Err(AppError::BadRequest(format!(
+                "height_range must be one of: {}",
+                VALID_HEIGHT_RANGES.join(", ")
+            )));
+        }
     }
     Ok(())
 }
@@ -173,6 +189,7 @@ async fn create_date(
     }
     validate_gender(&body.gender)?;
     validate_age_range(&body.age_range)?;
+    validate_optional_height(&body.height_range)?;
     validate_rating(body.rating)?;
     validate_optional_rating(body.face_rating, "face_rating")?;
     validate_optional_rating(body.body_rating, "body_rating")?;
@@ -210,8 +227,8 @@ async fn create_date(
 
     sqlx::query(
         r#"
-        INSERT INTO dates (id, user_id, country_code, city_id, gender, age_range, description, person_nickname, rating, face_rating, body_rating, chat_rating, date_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        INSERT INTO dates (id, user_id, country_code, city_id, gender, age_range, height_range, description, person_nickname, rating, face_rating, body_rating, chat_rating, date_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         "#,
     )
     .bind(id)
@@ -220,6 +237,7 @@ async fn create_date(
     .bind(body.city_id)
     .bind(&body.gender)
     .bind(&body.age_range)
+    .bind(&body.height_range)
     .bind(&body.description)
     .bind(&body.person_nickname)
     .bind(body.rating)
@@ -275,6 +293,7 @@ async fn create_date(
         latitude,
         gender: body.gender,
         age_range: body.age_range,
+        height_range: body.height_range,
         description: body.description,
         person_nickname: body.person_nickname,
         rating: body.rating,
@@ -306,7 +325,7 @@ async fn list_dates(
     let rows = if let Some(cursor) = params.cursor {
         sqlx::query(
             r#"
-            SELECT d.id, d.country_code, d.city_id, c.name, ST_X(c.location), ST_Y(c.location), d.gender, d.age_range, d.description, d.person_nickname, d.rating, d.face_rating, d.body_rating, d.chat_rating, d.date_at, d.created_at, d.updated_at
+            SELECT d.id, d.country_code, d.city_id, c.name, ST_X(c.location), ST_Y(c.location), d.gender, d.age_range, d.height_range, d.description, d.person_nickname, d.rating, d.face_rating, d.body_rating, d.chat_rating, d.date_at, d.created_at, d.updated_at
             FROM dates d
             JOIN cities c ON c.id = d.city_id
             WHERE d.user_id = $1 AND d.deleted_at IS NULL AND d.id < $2
@@ -322,7 +341,7 @@ async fn list_dates(
     } else {
         sqlx::query(
             r#"
-            SELECT d.id, d.country_code, d.city_id, c.name, ST_X(c.location), ST_Y(c.location), d.gender, d.age_range, d.description, d.person_nickname, d.rating, d.face_rating, d.body_rating, d.chat_rating, d.date_at, d.created_at, d.updated_at
+            SELECT d.id, d.country_code, d.city_id, c.name, ST_X(c.location), ST_Y(c.location), d.gender, d.age_range, d.height_range, d.description, d.person_nickname, d.rating, d.face_rating, d.body_rating, d.chat_rating, d.date_at, d.created_at, d.updated_at
             FROM dates d
             JOIN cities c ON c.id = d.city_id
             WHERE d.user_id = $1 AND d.deleted_at IS NULL
@@ -351,16 +370,17 @@ async fn list_dates(
             latitude: row.get(5),
             gender: row.get(6),
             age_range: row.get(7),
-            description: row.get(8),
-            person_nickname: row.get(9),
-            rating: row.get(10),
-            face_rating: row.get(11),
-            body_rating: row.get(12),
-            chat_rating: row.get(13),
-            date_at: row.get(14),
+            height_range: row.get(8),
+            description: row.get(9),
+            person_nickname: row.get(10),
+            rating: row.get(11),
+            face_rating: row.get(12),
+            body_rating: row.get(13),
+            chat_rating: row.get(14),
+            date_at: row.get(15),
             tag_ids,
-            created_at: row.get(15),
-            updated_at: row.get(16),
+            created_at: row.get(16),
+            updated_at: row.get(17),
         });
     }
 
@@ -387,7 +407,7 @@ async fn get_date(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let row = sqlx::query(
         r#"
-        SELECT d.id, d.country_code, d.city_id, c.name, ST_X(c.location), ST_Y(c.location), d.gender, d.age_range, d.description, d.person_nickname, d.rating, d.face_rating, d.body_rating, d.chat_rating, d.date_at, d.created_at, d.updated_at
+        SELECT d.id, d.country_code, d.city_id, c.name, ST_X(c.location), ST_Y(c.location), d.gender, d.age_range, d.height_range, d.description, d.person_nickname, d.rating, d.face_rating, d.body_rating, d.chat_rating, d.date_at, d.created_at, d.updated_at
         FROM dates d
         JOIN cities c ON c.id = d.city_id
         WHERE d.id = $1 AND d.user_id = $2 AND d.deleted_at IS NULL
@@ -411,16 +431,17 @@ async fn get_date(
         latitude: row.get(5),
         gender: row.get(6),
         age_range: row.get(7),
-        description: row.get(8),
-        person_nickname: row.get(9),
-        rating: row.get(10),
-        face_rating: row.get(11),
-        body_rating: row.get(12),
-        chat_rating: row.get(13),
-        date_at: row.get(14),
+        height_range: row.get(8),
+        description: row.get(9),
+        person_nickname: row.get(10),
+        rating: row.get(11),
+        face_rating: row.get(12),
+        body_rating: row.get(13),
+        chat_rating: row.get(14),
+        date_at: row.get(15),
         tag_ids,
-        created_at: row.get(15),
-        updated_at: row.get(16),
+        created_at: row.get(16),
+        updated_at: row.get(17),
     };
 
     Ok(Json(serde_json::json!({
@@ -484,6 +505,15 @@ async fn update_date(
         validate_age_range(age_range)?;
         sqlx::query("UPDATE dates SET age_range = $1, updated_at = NOW() WHERE id = $2")
             .bind(age_range)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    if body.height_range.is_some() {
+        validate_optional_height(&body.height_range)?;
+        sqlx::query("UPDATE dates SET height_range = $1, updated_at = NOW() WHERE id = $2")
+            .bind(&body.height_range)
             .bind(id)
             .execute(&state.db)
             .await?;

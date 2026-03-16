@@ -15,7 +15,7 @@ export interface Badge {
   category: string;
   threshold: number;
   imageUrl: string | null;
-  gender: 'male' | 'female' | 'both';
+  gender: 'male' | 'female' | 'lgbt' | 'both';
 }
 
 export interface UserSummary {

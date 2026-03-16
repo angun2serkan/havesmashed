@@ -103,6 +103,8 @@ pub fn router() -> Router<AppState> {
         // Users
         .route("/users", get(list_users))
         .route("/users/{id}", get(get_user))
+        // Invites
+        .route("/invites", post(create_platform_invite))
 }
 
 // ── Dashboard ──────────────────────────────────────────────────
@@ -765,6 +767,43 @@ async fn get_user(
             "country_count": row.get::<i64, _>("country_count"),
             "city_count": row.get::<i64, _>("city_count"),
             "badges": badge_list,
+        },
+        "error": null
+    })))
+}
+
+// ── Invite management ─────────────────────────────────────────
+
+/// POST /api/admin/invites
+/// Create a platform invite link (admin-generated, no user auth needed).
+async fn create_platform_invite(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config)?;
+
+    use crate::services::invite::{self, InviteData, InviteType};
+
+    let token = invite::generate_token();
+    let data = InviteData {
+        inviter_id: Uuid::nil(), // admin-generated, no specific user
+        created_at: chrono::Utc::now().to_rfc3339(),
+        invite_type: InviteType::Platform,
+    };
+
+    let mut redis = state.redis.clone();
+    invite::store_invite(&mut redis, &token, &data).await?;
+
+    let base_url = std::env::var("FRONTEND_URL")
+        .unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let link = format!("{base_url}/invite/{token}");
+
+    Ok(Json(json!({
+        "success": true,
+        "data": {
+            "token": token,
+            "link": link,
+            "expires_in_secs": 86400
         },
         "error": null
     })))

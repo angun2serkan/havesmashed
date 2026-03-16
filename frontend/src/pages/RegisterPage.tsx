@@ -20,6 +20,7 @@ export function RegisterPage() {
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const hasInvite = !!searchParams.get("invite_token");
 
   const handleCreate = async () => {
     setLoading(true);
@@ -27,8 +28,12 @@ export function RegisterPage() {
 
     try {
       const inviteToken = searchParams.get("invite_token");
-      const body: Record<string, string> = {};
-      if (inviteToken) body.invite_token = inviteToken;
+      if (!inviteToken) {
+        setError("An invite link is required to register.");
+        setLoading(false);
+        return;
+      }
+      const body = { invite_token: inviteToken };
 
       const res = await fetch(`${API_BASE}/api/auth/register`, {
         method: "POST",
@@ -88,25 +93,36 @@ export function RegisterPage() {
 
         <div className="bg-dark-800 border border-dark-600 rounded-xl p-6">
           {step === "create" && (
-            <div className="text-center space-y-6">
-              <div>
+            hasInvite ? (
+              <div className="text-center space-y-6">
+                <div>
+                  <h2 className="text-xl font-bold text-white mb-2">
+                    Anonymous Registration
+                  </h2>
+                  <p className="text-sm text-dark-300">
+                    No email, no password. We'll generate a 12-word recovery
+                    phrase that acts as your identity.
+                  </p>
+                </div>
+                <Button
+                  onClick={handleCreate}
+                  disabled={loading}
+                  className="w-full"
+                  size="lg"
+                >
+                  {loading ? "Creating Account..." : "Create Account"}
+                </Button>
+              </div>
+            ) : (
+              <div className="text-center space-y-4 py-4">
                 <h2 className="text-xl font-bold text-white mb-2">
-                  Anonymous Registration
+                  Invite Required
                 </h2>
                 <p className="text-sm text-dark-300">
-                  No email, no password. We'll generate a 12-word recovery
-                  phrase that acts as your identity.
+                  You need an invite link to create an account. Ask a friend or an admin for one.
                 </p>
               </div>
-              <Button
-                onClick={handleCreate}
-                disabled={loading}
-                className="w-full"
-                size="lg"
-              >
-                {loading ? "Creating Account..." : "Create Account"}
-              </Button>
-            </div>
+            )
           )}
 
           {step === "display" && (

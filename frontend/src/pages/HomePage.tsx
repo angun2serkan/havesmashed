@@ -1,6 +1,6 @@
 import { GlobeView } from "@/components/Globe/GlobeView";
 import { DateEntryForm } from "@/components/DateEntry/DateEntryForm";
-import { StatsCards } from "@/components/Stats/StatsCards";
+import { SimpleStatsCards } from "@/components/Stats/StatsCards";
 import { SmashOverlay } from "@/components/SmashOverlay";
 import { useLogStore } from "@/stores/logStore";
 import { useFriendStore } from "@/stores/friendStore";
@@ -101,7 +101,7 @@ export function HomePage() {
           />
         </button>
         <div className="px-4 pb-20 overflow-y-auto h-[calc(100%-2rem)]">
-          <StatsCards />
+          <SimpleStatsCards />
           <div className="mt-4 space-y-2">
             <h3 className="text-sm font-semibold text-dark-300 uppercase tracking-wider">
               Recent Dates
@@ -127,7 +127,7 @@ export function HomePage() {
                   </div>
                   <div className="flex items-center justify-between mt-1">
                     <span className="text-xs text-dark-400 capitalize">
-                      {date.gender} / {date.ageRange}
+                      {date.gender} / {date.ageRange}{date.heightRange ? ` / ${date.heightRange} cm` : ""}
                     </span>
                     <div className="flex items-center gap-2">
                       {date.faceRating !== null && (
@@ -159,7 +159,7 @@ export function HomePage() {
 
       {/* Desktop stats overlay */}
       <div className="hidden md:block absolute bottom-6 left-6 z-10 w-96">
-        <StatsCards />
+        <SimpleStatsCards />
       </div>
 
       {/* Date entry form modal */}
