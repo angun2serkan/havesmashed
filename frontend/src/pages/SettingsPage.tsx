@@ -1,11 +1,19 @@
-import { useState, useEffect } from "react";
-import { Shield, Trash2, User, Pencil, Check, X, Award } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Shield, Trash2, User, Pencil, Check, X, Award, Loader2, Camera } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { BadgeGrid } from "@/components/Badges/BadgeGrid";
+import { ShareWrapped } from "@/components/Stats/ShareWrapped";
 import { useAuthStore } from "@/stores/authStore";
 import { api } from "@/services/api";
 import type { Badge } from "@/types";
+
+interface PrivacySettings {
+  shareCountries: boolean;
+  shareCities: boolean;
+  shareDates: boolean;
+  shareStats: boolean;
+}
 
 export function SettingsPage() {
   const user = useAuthStore((s) => s.user);
@@ -18,6 +26,14 @@ export function SettingsPage() {
   const [nicknameError, setNicknameError] = useState<string | null>(null);
   const [badges, setBadges] = useState<Badge[]>([]);
   const [badgesLoading, setBadgesLoading] = useState(true);
+  const [privacy, setPrivacy] = useState<PrivacySettings>({
+    shareCountries: true,
+    shareCities: false,
+    shareDates: false,
+    shareStats: true,
+  });
+  const [privacyLoading, setPrivacyLoading] = useState(true);
+  const [privacySaving, setPrivacySaving] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -25,7 +41,29 @@ export function SettingsPage() {
       .then(setBadges)
       .catch(() => {})
       .finally(() => setBadgesLoading(false));
+
+    api
+      .getPrivacy()
+      .then(setPrivacy)
+      .catch(() => {})
+      .finally(() => setPrivacyLoading(false));
   }, []);
+
+  const handlePrivacyToggle = useCallback(
+    async (key: keyof PrivacySettings, snakeKey: string, value: boolean) => {
+      setPrivacySaving(key);
+      const prev = privacy[key];
+      setPrivacy((p) => ({ ...p, [key]: value }));
+      try {
+        await api.updatePrivacy({ [snakeKey]: value });
+      } catch {
+        setPrivacy((p) => ({ ...p, [key]: prev }));
+      } finally {
+        setPrivacySaving(null);
+      }
+    },
+    [privacy],
+  );
 
   const handleSaveNickname = async () => {
     const trimmed = nicknameInput.trim();
@@ -143,6 +181,16 @@ export function SettingsPage() {
           )}
         </Card>
 
+        {/* Dating Wrapped */}
+        <Card>
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-white mb-1">
+            <Camera size={16} className="text-neon-500" />
+            Dating Wrapped
+          </h3>
+          <p className="text-xs text-dark-400 mb-3">Share your stats as a visual card</p>
+          <ShareWrapped />
+        </Card>
+
         </div>
 
         {/* Right column */}
@@ -153,26 +201,39 @@ export function SettingsPage() {
             <Shield size={16} className="text-accent-cyan" />
             Default Privacy
           </h3>
-          <div className="space-y-3">
-            {[
-              { label: "Share Countries", defaultChecked: true },
-              { label: "Share Cities", defaultChecked: false },
-              { label: "Share Dates", defaultChecked: false },
-              { label: "Share Stats", defaultChecked: true },
-            ].map(({ label, defaultChecked }) => (
-              <label
-                key={label}
-                className="flex items-center justify-between cursor-pointer"
-              >
-                <span className="text-sm text-dark-200">{label}</span>
-                <input
-                  type="checkbox"
-                  defaultChecked={defaultChecked}
-                  className="accent-neon-500"
-                />
-              </label>
-            ))}
-          </div>
+          {privacyLoading ? (
+            <div className="flex items-center justify-center py-4">
+              <Loader2 size={16} className="animate-spin text-dark-500" />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {([
+                { label: "Share Countries", key: "shareCountries" as const, snakeKey: "share_countries" },
+                { label: "Share Cities", key: "shareCities" as const, snakeKey: "share_cities" },
+                { label: "Share Dates", key: "shareDates" as const, snakeKey: "share_dates" },
+                { label: "Share Stats", key: "shareStats" as const, snakeKey: "share_stats" },
+              ]).map(({ label, key, snakeKey }) => (
+                <label
+                  key={key}
+                  className="flex items-center justify-between cursor-pointer"
+                >
+                  <span className="text-sm text-dark-200">{label}</span>
+                  <div className="flex items-center gap-2">
+                    {privacySaving === key && (
+                      <Loader2 size={12} className="animate-spin text-dark-500" />
+                    )}
+                    <input
+                      type="checkbox"
+                      checked={privacy[key]}
+                      onChange={(e) => handlePrivacyToggle(key, snakeKey, e.target.checked)}
+                      disabled={privacySaving !== null}
+                      className="accent-neon-500"
+                    />
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
         </Card>
 
         {/* Danger Zone */}

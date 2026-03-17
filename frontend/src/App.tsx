@@ -10,6 +10,8 @@ import { SettingsPage } from "@/pages/SettingsPage";
 import { NicknamePage } from "@/pages/NicknamePage";
 import { InvitePage } from "@/pages/InvitePage";
 import { NotificationsPage } from "@/pages/NotificationsPage";
+import { ForumPage } from "@/pages/ForumPage";
+import { TopicDetailPage } from "@/pages/TopicDetailPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -116,6 +118,22 @@ export default function App() {
           element={
             <ProtectedRoute>
               <NotificationsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/forum"
+          element={
+            <ProtectedRoute>
+              <ForumPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/forum/:id"
+          element={
+            <ProtectedRoute>
+              <TopicDetailPage />
             </ProtectedRoute>
           }
         />

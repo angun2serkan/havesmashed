@@ -70,6 +70,4 @@
   outline: none;
 }
 
-body {
-  overflow: hidden;
-}
+/* Globe page handles its own overflow via inline styles */

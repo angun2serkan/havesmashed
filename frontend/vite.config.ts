@@ -10,6 +10,16 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          globe: ["react-globe.gl", "three"],
+          charts: ["recharts"],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {

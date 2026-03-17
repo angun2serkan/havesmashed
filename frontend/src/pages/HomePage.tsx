@@ -1,18 +1,34 @@
-import { GlobeView } from "@/components/Globe/GlobeView";
+import { lazy, Suspense, useCallback } from "react";
 import { DateEntryForm } from "@/components/DateEntry/DateEntryForm";
 import { SimpleStatsCards } from "@/components/Stats/StatsCards";
 import { SmashOverlay } from "@/components/SmashOverlay";
 import { useLogStore } from "@/stores/logStore";
+
+const GlobeView = lazy(() =>
+  import("@/components/Globe/GlobeView").then((m) => ({ default: m.GlobeView }))
+);
+import { DateDetailModal } from "@/components/Globe/DateDetailModal";
+import { CityInsightsModal } from "@/components/Globe/CityInsightsModal";
+import type { DateDetailData } from "@/components/Globe/DateDetailModal";
+import type { GlobePoint } from "@/components/Globe/GlobeView";
 import { useFriendStore } from "@/stores/friendStore";
+import { useAuthStore } from "@/stores/authStore";
 import { api } from "@/services/api";
 import { useState, useRef, useEffect } from "react";
-import { ChevronUp, Star, Calendar, Smile, Dumbbell, MessageCircle } from "lucide-react";
+import { ChevronUp, Star, Calendar, Smile, Dumbbell, MessageCircle, MapPin, Flag, Globe, Filter } from "lucide-react";
 import { getCountryName } from "@/utils/countryName";
-import type { Notification } from "@/types";
+import type { Notification, FriendStats } from "@/types";
+
+function fmtAvg(val: number | null): string {
+  return val !== null ? val.toFixed(1) : "--";
+}
 
 export function HomePage() {
   const dates = useLogStore((s) => s.dates);
   const setFriendDates = useFriendStore((s) => s.setFriendDates);
+  const connections = useFriendStore((s) => s.connections);
+  const setConnections = useFriendStore((s) => s.setConnections);
+  const currentUser = useAuthStore((s) => s.user);
   const [panelOpen, setPanelOpen] = useState(false);
   const touchStartY = useRef(0);
   const [smashNotifications, setSmashNotifications] = useState<Notification[]>([]);
@@ -21,11 +37,29 @@ export function HomePage() {
   const setDates = useLogStore((s) => s.setDates);
   const setStats = useLogStore((s) => s.setStats);
 
+  // Globe filter: "mine" | "all" | friend UUID
+  const [globeFilter, setGlobeFilter] = useState<"mine" | "all" | string>("all");
+
+  // Friend stats overlay
+  const [selectedFriendStats, setSelectedFriendStats] = useState<FriendStats | null>(null);
+  const [selectedFriendName, setSelectedFriendName] = useState("");
+  const [selectedFriendColor, setSelectedFriendColor] = useState("");
+
+  // Date detail modal
+  const [selectedDate, setSelectedDate] = useState<DateDetailData | null>(null);
+  const [dateModalOpen, setDateModalOpen] = useState(false);
+
+  // City insights modal
+  const [insightsCityId, setInsightsCityId] = useState<number | null>(null);
+  const [insightsCityName, setInsightsCityName] = useState("");
+
   useEffect(() => {
     api.getDates().then((res) => setDates(res.dates)).catch(() => {});
     api.getStats().then(setStats).catch(() => {});
     api.getFriendDates().then(setFriendDates).catch(() => {});
-  }, [setDates, setStats, setFriendDates]);
+    // Load connections for the filter dropdown
+    api.getConnections("accepted").then(setConnections).catch(() => {});
+  }, [setDates, setStats, setFriendDates, setConnections]);
 
   useEffect(() => {
     // Check for friend_date notifications on mount
@@ -50,6 +84,57 @@ export function HomePage() {
       .catch(() => {});
   }, []);
 
+  // Handle filter changes
+  const handleFilterChange = useCallback(
+    (value: string) => {
+      setGlobeFilter(value);
+
+      if (value === "mine") {
+        // Show no friend dates — set empty array
+        setFriendDates([]);
+        setSelectedFriendStats(null);
+        setSelectedFriendName("");
+        setSelectedFriendColor("");
+      } else if (value === "all") {
+        // Refetch all friend dates
+        api.getFriendDates().then(setFriendDates).catch(() => {});
+        setSelectedFriendStats(null);
+        setSelectedFriendName("");
+        setSelectedFriendColor("");
+      } else {
+        // Specific friend UUID
+        const friendId = value;
+        api.getFriendDates(friendId).then(setFriendDates).catch(() => {});
+        api.getFriendStats(friendId).then(setSelectedFriendStats).catch(() => {});
+
+        // Find friend info from connections
+        const conn = connections.find((c) => {
+          const fId =
+            c.requesterId === currentUser?.id ? c.responderId : c.requesterId;
+          return fId === friendId;
+        });
+        setSelectedFriendName(conn?.friendNickname ?? "Anonim");
+        setSelectedFriendColor(conn?.color ?? "#FF5733");
+      }
+    },
+    [setFriendDates, connections, currentUser],
+  );
+
+  // Get the friend user ID from a connection
+  const getFriendUserId = useCallback(
+    (conn: (typeof connections)[number]) => {
+      return conn.requesterId === currentUser?.id
+        ? conn.responderId
+        : conn.requesterId;
+    },
+    [currentUser],
+  );
+
+  const handleDateClick = useCallback((point: GlobePoint) => {
+    setSelectedDate(point.dateData);
+    setDateModalOpen(true);
+  }, []);
+
   const handleSmashDismiss = () => {
     setShowSmash(false);
     // Mark all friend_date notifications as read
@@ -68,6 +153,8 @@ export function HomePage() {
     if (deltaY < -60) setPanelOpen(false);
   };
 
+  const acceptedConnections = connections.filter((c) => c.status === "accepted");
+
   return (
     <div
       className="relative w-full h-screen overflow-hidden"
@@ -81,8 +168,105 @@ export function HomePage() {
         />
       )}
 
-      {/* Globe fills entire screen */}
-      <GlobeView />
+      {/* Globe fills entire screen — lazy loaded */}
+      <Suspense fallback={<div className="w-full h-full flex items-center justify-center bg-dark-950"><div className="text-neon-500 animate-pulse text-lg">Loading Globe...</div></div>}>
+        <GlobeView
+          onDateClick={handleDateClick}
+          onCityInsights={(id, name) => {
+            setInsightsCityId(id);
+            setInsightsCityName(name);
+          }}
+        />
+      </Suspense>
+
+      {/* Friend filter dropdown overlay */}
+      <div className="absolute top-4 right-4 z-20">
+        <div className="relative">
+          <Filter
+            size={14}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-dark-400 pointer-events-none"
+          />
+          <select
+            value={globeFilter}
+            onChange={(e) => handleFilterChange(e.target.value)}
+            className="bg-dark-900/90 backdrop-blur-md border border-dark-600 rounded-lg pl-8 pr-3 py-2 text-sm text-white appearance-none cursor-pointer focus:outline-none focus:border-neon-500/50 hover:border-dark-500 transition-colors min-w-[140px]"
+          >
+            <option value="mine">Sadece Ben</option>
+            <option value="all">Herkes</option>
+            {acceptedConnections.map((c) => (
+              <option key={c.id} value={getFriendUserId(c)}>
+                {c.friendNickname ?? "Anonim"}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Friend stats overlay — shown when a specific friend is selected */}
+      {selectedFriendStats && selectedFriendName && (
+        <div className="absolute top-16 right-4 z-20 w-64">
+          <div
+            className="bg-dark-900/90 backdrop-blur-md border rounded-xl p-3 space-y-2"
+            style={{ borderColor: `${selectedFriendColor}40` }}
+          >
+            <p
+              className="text-sm font-bold"
+              style={{ color: selectedFriendColor }}
+            >
+              {selectedFriendName}
+              <span className="text-dark-400 font-normal ml-1 text-xs">istatistikleri</span>
+            </p>
+            <div className="grid grid-cols-2 gap-1.5">
+              <div className="flex items-center gap-2 bg-dark-800/80 rounded-lg px-2 py-1.5">
+                <MapPin size={12} style={{ color: selectedFriendColor }} />
+                <div>
+                  <p className="text-sm font-bold text-white leading-none">
+                    {selectedFriendStats.totalDates}
+                  </p>
+                  <p className="text-[8px] text-dark-400 uppercase">Dates</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 bg-dark-800/80 rounded-lg px-2 py-1.5">
+                <Flag size={12} className="text-cyan-400" />
+                <div>
+                  <p className="text-sm font-bold text-white leading-none">
+                    {selectedFriendStats.uniqueCountries}
+                  </p>
+                  <p className="text-[8px] text-dark-400 uppercase">Countries</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 bg-dark-800/80 rounded-lg px-2 py-1.5">
+                <Globe size={12} className="text-purple-400" />
+                <div>
+                  <p className="text-sm font-bold text-white leading-none">
+                    {selectedFriendStats.uniqueCities}
+                  </p>
+                  <p className="text-[8px] text-dark-400 uppercase">Cities</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 bg-dark-800/80 rounded-lg px-2 py-1.5">
+                <Star size={12} className="text-yellow-400" />
+                <div>
+                  <p className="text-sm font-bold text-white leading-none">
+                    {fmtAvg(selectedFriendStats.averageRating)}
+                  </p>
+                  <p className="text-[8px] text-dark-400 uppercase">Avg Rating</p>
+                </div>
+              </div>
+            </div>
+            {selectedFriendStats.badges.length > 0 && (
+              <div className="pt-2 border-t border-dark-700">
+                <p className="text-[8px] text-dark-500 uppercase mb-1">Rozetler</p>
+                <div className="flex flex-wrap gap-1">
+                  {selectedFriendStats.badges.map((b) => (
+                    <span key={b.id} className="text-lg" title={b.name}>{b.icon}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Mobile swipe-up panel */}
       <div
@@ -164,6 +348,23 @@ export function HomePage() {
 
       {/* Date entry form modal */}
       <DateEntryForm />
+
+      {/* Date detail modal — opens on globe point click */}
+      <DateDetailModal
+        isOpen={dateModalOpen}
+        onClose={() => setDateModalOpen(false)}
+        date={selectedDate}
+      />
+
+      {/* City insights modal — rendered at page level for proper centering */}
+      {insightsCityId && (
+        <CityInsightsModal
+          isOpen={true}
+          onClose={() => setInsightsCityId(null)}
+          cityId={insightsCityId}
+          cityName={insightsCityName}
+        />
+      )}
     </div>
   );
 }

@@ -22,7 +22,7 @@ interface DateState {
 
 export const useLogStore = create<DateState>((set) => ({
   dates: [],
-  stats: { totalDates: 0, uniqueCountries: 0, uniqueCities: 0, averageRating: null, averageFaceRating: null, averageBodyRating: null, averageChatRating: null },
+  stats: { totalDates: 0, uniqueCountries: 0, uniqueCities: 0, averageRating: null, averageFaceRating: null, averageBodyRating: null, averageChatRating: null, currentStreak: 0, longestStreak: 0 },
   selectedCountry: null,
   selectedCity: null,
   isDateFormOpen: false,

@@ -5,12 +5,28 @@ import { useFriendStore } from "@/stores/friendStore";
 import type { CountryFeature } from "@/types";
 import { CitySelector } from "./CitySelector";
 import { COUNTRY_CODE_MAP } from "@/data/countryCodeMap";
+import type { DateDetailData } from "./DateDetailModal";
 
 const DARK_GLOBE_COLOR = "#0a0a0f";
 const ATMOSPHERE_COLOR = "#ff007f";
 const UNVISITED_COLOR = "rgba(30, 30, 50, 0.6)";
 const STROKE_COLOR = "rgba(80, 80, 120, 0.3)";
 const VISITED_STROKE = "#ff007f";
+
+export interface GlobePoint {
+  lat: number;
+  lng: number;
+  color: string;
+  radius: number;
+  label: string;
+  id: string;
+  dateData: DateDetailData;
+}
+
+interface GlobeViewProps {
+  onDateClick?: (point: GlobePoint) => void;
+  onCityInsights?: (cityId: number, cityName: string) => void;
+}
 
 function getVisitedColor(logCount: number): string {
   if (logCount === 0) return UNVISITED_COLOR;
@@ -22,7 +38,7 @@ function getVisitedColor(logCount: number): string {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
 
-export function GlobeView() {
+export function GlobeView({ onDateClick, onCityInsights }: GlobeViewProps) {
   const globeRef = useRef<GlobeMethods | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
   const [countries, setCountries] = useState<CountryFeature[]>([]);
@@ -43,15 +59,6 @@ export function GlobeView() {
 
   // Build globe points from user dates + friend dates
   const allPoints = useMemo(() => {
-    interface GlobePoint {
-      lat: number;
-      lng: number;
-      color: string;
-      radius: number;
-      label: string;
-      id: string;
-    }
-
     const points: GlobePoint[] = [];
     const cityGroups: Record<string, GlobePoint[]> = {};
 
@@ -67,6 +74,23 @@ export function GlobeView() {
         radius: 0.3,
         label: `You — ${date.cityName || "Unknown"}`,
         id: date.id,
+        dateData: {
+          cityName: date.cityName || null,
+          countryCode: date.countryCode,
+          dateAt: date.dateAt,
+          gender: date.gender,
+          ageRange: date.ageRange,
+          heightRange: date.heightRange,
+          personNickname: date.personNickname,
+          description: date.description,
+          rating: date.rating,
+          faceRating: date.faceRating,
+          bodyRating: date.bodyRating,
+          chatRating: date.chatRating,
+          tagIds: date.tagIds,
+          ownerNickname: "You",
+          ownerColor: "#ff007f",
+        },
       });
     }
 
@@ -81,6 +105,23 @@ export function GlobeView() {
         radius: 0.3,
         label: `${fd.friendNickname || "Friend"} — ${fd.cityName || "Unknown"}`,
         id: fd.id,
+        dateData: {
+          cityName: fd.cityName,
+          countryCode: fd.countryCode,
+          dateAt: fd.dateAt,
+          gender: fd.gender,
+          ageRange: fd.ageRange,
+          heightRange: fd.heightRange,
+          personNickname: fd.personNickname,
+          description: fd.description,
+          rating: fd.rating,
+          faceRating: fd.faceRating,
+          bodyRating: fd.bodyRating,
+          chatRating: fd.chatRating,
+          tagIds: fd.tagIds,
+          ownerNickname: fd.friendNickname || "Friend",
+          ownerColor: fd.color,
+        },
       });
     }
 
@@ -322,12 +363,17 @@ export function GlobeView() {
           pointAltitude={0.03}
           pointRadius={(d: object) => (d as { radius: number }).radius}
           pointLabel={(d: object) => (d as { label: string }).label}
+          onPointClick={(point: object) => {
+            const p = point as GlobePoint;
+            onDateClick?.(p);
+          }}
           animateIn={true}
         />
       )}
       {zoomedCountry && (
         <CitySelector
           countryCode={zoomedCountry}
+          onCityInsights={onCityInsights}
           onClose={() => {
             setZoomedCountry(null);
             setSelectedCountry(null);

@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { StatsCards } from "@/components/Stats/StatsCards";
+import { ShareWrapped } from "@/components/Stats/ShareWrapped";
 import { Card } from "@/components/ui/Card";
 import { useLogStore } from "@/stores/logStore";
 import { api } from "@/services/api";
@@ -99,6 +100,10 @@ export function DashboardPage() {
       <h1 className="text-2xl font-bold text-white mb-6">Dashboard</h1>
 
       <StatsCards />
+
+      <div className="mt-4">
+        <ShareWrapped />
+      </div>
 
       <div className="mt-6">
         <div className="flex items-center justify-between mb-3">

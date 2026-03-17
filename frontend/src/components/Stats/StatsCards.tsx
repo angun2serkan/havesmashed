@@ -1,4 +1,4 @@
-import { MapPin, Flag, Globe, Star, Smile, Dumbbell, MessageCircle } from "lucide-react";
+import { MapPin, Flag, Globe, Star, Smile, Dumbbell, MessageCircle, Flame } from "lucide-react";
 import { useLogStore } from "@/stores/logStore";
 import type { LucideIcon } from "lucide-react";
 
@@ -161,11 +161,13 @@ function CountCard({
   label,
   icon: Icon,
   glowColor,
+  subtitle,
 }: {
   value: number;
   label: string;
   icon: LucideIcon;
   glowColor: string;
+  subtitle?: string;
 }) {
   return (
     <div className="relative bg-dark-900/80 border border-dark-700/50 rounded-2xl p-5 flex flex-col items-center overflow-hidden group hover:border-dark-600 transition-all duration-300">
@@ -178,6 +180,9 @@ function CountCard({
         {value}
       </p>
       <p className="text-[10px] text-dark-400 mt-1 font-semibold uppercase tracking-widest relative z-10">{label}</p>
+      {subtitle && (
+        <p className="text-[9px] text-dark-500 mt-0.5 relative z-10">{subtitle}</p>
+      )}
     </div>
   );
 }
@@ -190,10 +195,11 @@ export function StatsCards() {
   return (
     <div className="space-y-3">
       {/* Top row: count stats */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <CountCard value={stats.totalDates} label="Total Dates" icon={MapPin} glowColor="#ff007f" />
         <CountCard value={stats.uniqueCountries} label="Countries" icon={Flag} glowColor="#00e5ff" />
         <CountCard value={stats.uniqueCities} label="Cities" icon={Globe} glowColor="#bf00ff" />
+        <CountCard value={stats.currentStreak} label="Streak" icon={Flame} glowColor="#fb923c" subtitle={`En uzun: ${stats.longestStreak}`} />
       </div>
 
       {/* Bottom row: neon gauges */}
@@ -221,6 +227,7 @@ export function SimpleStatsCards() {
     { label: "Countries", value: String(stats.uniqueCountries), icon: Flag, color: "#00e5ff" },
     { label: "Cities", value: String(stats.uniqueCities), icon: Globe, color: "#bf00ff" },
     { label: "Avg Rating", value: fmtAvg(stats.averageRating), icon: Star, color: "#facc15" },
+    { label: "Streak", value: `${stats.currentStreak}`, icon: Flame, color: "#fb923c" },
   ];
 
   return (

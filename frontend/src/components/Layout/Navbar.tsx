@@ -4,6 +4,7 @@ import {
   Globe,
   CalendarHeart,
   Users,
+  MessageSquare,
   Settings,
   LogOut,
   Bell,
@@ -15,6 +16,7 @@ const navItems = [
   { path: "/", icon: Globe, label: "Globe" },
   { path: "/dates", icon: CalendarHeart, label: "Dates" },
   { path: "/friends", icon: Users, label: "Friends" },
+  { path: "/forum", icon: MessageSquare, label: "Forum" },
   { path: "/settings", icon: Settings, label: "Settings" },
 ];
 
@@ -29,7 +31,7 @@ export function Navbar() {
       api.getUnreadCount().then(setUnreadCount).catch(() => {});
     };
     fetchCount();
-    const interval = setInterval(fetchCount, 30000);
+    const interval = setInterval(fetchCount, 300000); // 5 minutes
     return () => clearInterval(interval);
   }, [isAuthenticated]);
 
@@ -133,6 +135,13 @@ export function Navbar() {
           {bellIcon}
           <span className="text-[10px]">Alerts</span>
         </Link>
+        <button
+          onClick={logout}
+          className="flex flex-col items-center gap-0.5 px-3 py-1 rounded-lg text-dark-400 transition-all cursor-pointer"
+        >
+          <LogOut size={20} />
+          <span className="text-[10px]">Logout</span>
+        </button>
       </nav>
     </>
   );

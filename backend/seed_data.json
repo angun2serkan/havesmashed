@@ -1,0 +1,115 @@
+{
+  "notes": [
+    "Bu dosya development seed data referansıdır — tüm test verilerini içerir.",
+    "DB sıfırlayıp seed data yüklemek için: cd backend && ./seed.sh",
+    "Sadece seed data yüklemek için: psql havesmashed < backend/seed.sql",
+    "Tüm phrase'ler wordlist.rs'deki kelimelerden oluşmaktadır.",
+    "Admin API key için .env.dev dosyanıza bakın."
+  ],
+
+  "users": [
+    {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "nickname": "ahmet",
+      "secret_phrase": "abandon ability able about above absent absorb abstract absurd abuse access accident",
+      "profile": "Erkek, kadınlarla 8 date, İstanbul/Londra/Berlin/Antalya, streak 5/8"
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "nickname": "ayse",
+      "secret_phrase": "account accuse achieve acid acoustic acquire across action actor actual adapt address",
+      "profile": "Kadın, erkeklerle 6 date, İstanbul/Ankara/Paris, streak 3/5"
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000003",
+      "nickname": "mehmet",
+      "secret_phrase": "adjust admit adult advance advice aerobic affair afford afraid again agent agree",
+      "profile": "Erkek, kadınlarla 5 date, İzmir/İstanbul, share_dates=FALSE, streak 2/4"
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000004",
+      "nickname": "sofia",
+      "secret_phrase": "ahead airport aisle alarm album alcohol alert alien allow almost alone alpha",
+      "profile": "Kadın, karışık cinsiyet 7 date (LGBT), 4 ülke, streak 4/6"
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000005",
+      "nickname": "can",
+      "secret_phrase": "already alter always amateur amazing among amount amused analyst anchor ancient anger",
+      "profile": "Erkek, yeni kullanıcı, 2 date, İstanbul, streak 1/1"
+    }
+  ],
+
+  "connections": [
+    { "from": "ahmet", "to": "ayse", "color": "#FF007F" },
+    { "from": "ahmet", "to": "mehmet", "color": "#00E5FF" },
+    { "from": "ayse", "to": "sofia", "color": "#39FF14" },
+    { "from": "mehmet", "to": "sofia", "color": "#BF00FF" },
+    { "from": "can", "to": "ahmet", "color": "#FFD700" }
+  ],
+
+  "dates": [
+    { "user": "ahmet", "city": "İstanbul", "country": "TR", "gender": "female", "age": "23-27", "height": "165-170", "person": "Elif", "rating": 8, "face": 9, "body": 8, "chat": 7, "tags": ["Dating App", "Restaurant", "Dinner"], "days_ago": 55 },
+    { "user": "ahmet", "city": "İstanbul", "country": "TR", "gender": "female", "age": "28-32", "height": "160-165", "person": "Zeynep", "rating": 7, "face": 8, "body": 7, "chat": 8, "tags": ["Social Media", "Park", "Walk/Stroll"], "days_ago": 48 },
+    { "user": "ahmet", "city": "Ankara", "country": "TR", "gender": "female", "age": "23-27", "height": "170-175", "person": "Selin", "rating": 6, "face": 7, "body": 6, "chat": 5, "tags": ["Through Friends", "Cafe", "Coffee"], "days_ago": 40 },
+    { "user": "ahmet", "city": "İstanbul", "country": "TR", "gender": "female", "age": "18-22", "height": "150-160", "person": "Deniz", "rating": 9, "face": 9, "body": 8, "chat": 9, "tags": ["Dating App", "Restaurant", "Dinner", "Sex"], "days_ago": 30 },
+    { "user": "ahmet", "city": "London", "country": "GB", "gender": "female", "age": "23-27", "height": "170-175", "person": "Emma", "rating": 8, "face": 8, "body": 7, "chat": 9, "tags": ["Dating App", "Bar", "Drinks"], "days_ago": 20 },
+    { "user": "ahmet", "city": "İstanbul", "country": "TR", "gender": "female", "age": "28-32", "height": "160-165", "person": "Aylin", "rating": 7, "face": 7, "body": 8, "chat": 6, "days_ago": 14 },
+    { "user": "ahmet", "city": "Berlin", "country": "DE", "gender": "female", "age": "23-27", "height": "175-180", "person": "Lisa", "rating": 8, "face": 8, "body": 9, "chat": 8, "days_ago": 7 },
+    { "user": "ahmet", "city": "Antalya", "country": "TR", "gender": "female", "age": "23-27", "height": "165-170", "person": "Melis", "rating": 9, "face": 9, "body": 9, "chat": 8, "days_ago": 3 },
+
+    { "user": "ayse", "city": "İstanbul", "country": "TR", "gender": "male", "age": "28-32", "height": "180-185", "person": "Kaan", "rating": 8, "face": 8, "body": 9, "chat": 7, "tags": ["Through Friends", "Cafe", "Coffee"], "days_ago": 42 },
+    { "user": "ayse", "city": "İstanbul", "country": "TR", "gender": "male", "age": "33-37", "height": "175-180", "person": "Burak", "rating": 6, "face": 7, "body": 7, "chat": 5, "days_ago": 35 },
+    { "user": "ayse", "city": "Ankara", "country": "TR", "gender": "male", "age": "28-32", "height": "185-190", "person": "Emre", "rating": 7, "face": 6, "body": 8, "chat": 8, "days_ago": 28 },
+    { "user": "ayse", "city": "İstanbul", "country": "TR", "gender": "male", "age": "23-27", "height": "175-180", "person": "Arda", "rating": 9, "face": 9, "body": 8, "chat": 9, "tags": ["Dating App", "Bar", "Drinks", "Dancing"], "days_ago": 18 },
+    { "user": "ayse", "city": "Paris", "country": "FR", "gender": "male", "age": "28-32", "height": "180-185", "person": "Pierre", "rating": 9, "face": 8, "body": 8, "chat": 9, "tags": ["Dating App", "Restaurant", "Dinner"], "days_ago": 10 },
+    { "user": "ayse", "city": "İstanbul", "country": "TR", "gender": "male", "age": "28-32", "height": "180-185", "person": "Onur", "rating": 7, "face": 7, "body": 8, "chat": 7, "days_ago": 4 },
+
+    { "user": "mehmet", "city": "İzmir", "country": "TR", "gender": "female", "age": "23-27", "height": "165-170", "person": "Ceren", "rating": 7, "face": 8, "body": 7, "chat": 6, "days_ago": 28 },
+    { "user": "mehmet", "city": "İzmir", "country": "TR", "gender": "female", "age": "28-32", "height": "160-165", "person": "Pınar", "rating": 6, "face": 6, "body": 6, "chat": 7, "days_ago": 21 },
+    { "user": "mehmet", "city": "İzmir", "country": "TR", "gender": "female", "age": "23-27", "height": "170-175", "person": "Ece", "rating": 8, "face": 9, "body": 8, "chat": 7, "days_ago": 14 },
+    { "user": "mehmet", "city": "İstanbul", "country": "TR", "gender": "female", "age": "23-27", "height": "165-170", "person": "Başak", "rating": 8, "face": 7, "body": 8, "chat": 8, "days_ago": 7 },
+    { "user": "mehmet", "city": "İzmir", "country": "TR", "gender": "female", "age": "18-22", "height": "150-160", "person": "Yağmur", "rating": 7, "face": 8, "body": 7, "chat": 6, "days_ago": 2 },
+
+    { "user": "sofia", "city": "İstanbul", "country": "TR", "gender": "male", "age": "28-32", "height": "180-185", "person": "Alp", "rating": 8, "face": 7, "body": 8, "chat": 8, "days_ago": 45 },
+    { "user": "sofia", "city": "İstanbul", "country": "TR", "gender": "female", "age": "23-27", "height": "165-170", "person": "Nil", "rating": 9, "face": 9, "body": 8, "chat": 9, "days_ago": 38 },
+    { "user": "sofia", "city": "Berlin", "country": "DE", "gender": "male", "age": "23-27", "height": "175-180", "person": "Max", "rating": 7, "face": 7, "body": 8, "chat": 6, "days_ago": 30 },
+    { "user": "sofia", "city": "Ankara", "country": "TR", "gender": "female", "age": "28-32", "height": "170-175", "person": "Defne", "rating": 8, "face": 8, "body": 7, "chat": 8, "days_ago": 22 },
+    { "user": "sofia", "city": "London", "country": "GB", "gender": "male", "age": "28-32", "height": "185-190", "person": "James", "rating": 7, "face": 6, "body": 8, "chat": 7, "days_ago": 15 },
+    { "user": "sofia", "city": "İstanbul", "country": "TR", "gender": "other", "age": "23-27", "height": "170-175", "person": "Deniz", "rating": 8, "face": 8, "body": 7, "chat": 9, "days_ago": 8 },
+    { "user": "sofia", "city": "Paris", "country": "FR", "gender": "female", "age": "23-27", "height": "165-170", "person": "Camille", "rating": 9, "face": 9, "body": 9, "chat": 9, "days_ago": 3 },
+
+    { "user": "can", "city": "İstanbul", "country": "TR", "gender": "female", "age": "18-22", "height": "160-165", "person": "İrem", "rating": 7, "face": 7, "body": 7, "chat": 6, "days_ago": 8 },
+    { "user": "can", "city": "İstanbul", "country": "TR", "gender": "female", "age": "23-27", "height": "165-170", "person": "Beren", "rating": 8, "face": 8, "body": 7, "chat": 8, "days_ago": 3 }
+  ],
+
+  "badges_earned": [
+    { "user": "ahmet", "badges": ["Centilmen", "Playboy", "Gezgin"] },
+    { "user": "ayse", "badges": ["İlk Buluşma", "Heartbreaker"] },
+    { "user": "mehmet", "badges": ["Centilmen", "Playboy"] },
+    { "user": "sofia", "badges": ["Meraklı", "Gezgin"] },
+    { "user": "can", "badges": ["Centilmen"] }
+  ],
+
+  "forum_topics": [
+    { "author": "ahmet", "title": "İstanbul'da en iyi date mekanları?", "category": "questions", "likes": 3, "comments": 2 },
+    { "author": "ayse", "title": "İlk buluşmada ne giyilir?", "category": "tips", "likes": 5, "comments": 3 },
+    { "author": "sofia", "title": "Berlin vs İstanbul date kültürü", "category": "stories", "likes": 7, "comments": 1 },
+    { "author": "mehmet", "title": "Uzun mesafe ilişkiler", "category": "general", "likes": 2, "comments": 0 },
+    { "author": "can", "title": "Anonim itiraf (su dökme)", "category": "stories", "anonymous": true, "likes": 12, "comments": 4 }
+  ],
+
+  "streaks": [
+    { "user": "ahmet", "current": 5, "longest": 8 },
+    { "user": "ayse", "current": 3, "longest": 5 },
+    { "user": "mehmet", "current": 2, "longest": 4 },
+    { "user": "sofia", "current": 4, "longest": 6 },
+    { "user": "can", "current": 1, "longest": 1 }
+  ],
+
+  "notifications": [
+    { "target": "broadcast", "title": "Hoş geldiniz!", "type": "system" },
+    { "target": "ahmet", "title": "ayse yeni bir date girdi!", "type": "friend_date" },
+    { "target": "ahmet", "title": "Yeni rozet kazandın! Playboy 🃏", "type": "badge" }
+  ]
+}

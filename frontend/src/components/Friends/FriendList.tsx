@@ -232,6 +232,7 @@ export function FriendList() {
                     <div className="flex flex-col">
                       <div className="flex items-center gap-2">
                         <span className="text-sm text-white font-medium">
+                          {conn.topBadgeIcon && <span className="mr-1">{conn.topBadgeIcon}</span>}
                           {conn.friendNickname ?? "Unknown"}
                         </span>
                         <FriendBadgeSection friendId={friendId} />

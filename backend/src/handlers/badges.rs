@@ -19,8 +19,8 @@ pub fn router() -> Router<AppState> {
 async fn get_all_badges(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let badges = sqlx::query_as::<_, (i32, String, String, String, String, i32, String)>(
-        "SELECT id, name, description, icon, category, threshold, gender FROM badges ORDER BY id"
+    let badges = sqlx::query_as::<_, (i32, String, String, String, String, i32, String, String)>(
+        "SELECT id, name, description, icon, category, threshold, gender, tier FROM badges ORDER BY id"
     )
     .fetch_all(&state.db)
     .await?;
@@ -29,7 +29,7 @@ async fn get_all_badges(
         json!({
             "id": b.0, "name": b.1, "description": b.2,
             "icon": b.3, "category": b.4, "threshold": b.5,
-            "gender": b.6
+            "gender": b.6, "tier": b.7
         })
     }).collect();
 
@@ -68,7 +68,7 @@ async fn get_friend_badges(
     use sqlx::Row;
     let rows = sqlx::query(
         r#"
-        SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, b.gender, ub.earned_at
+        SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, b.gender, b.tier, ub.earned_at
         FROM badges b
         JOIN user_badges ub ON ub.badge_id = b.id
         WHERE ub.user_id = $1
@@ -88,6 +88,7 @@ async fn get_friend_badges(
             "category": r.get::<String, _>("category"),
             "threshold": r.get::<i32, _>("threshold"),
             "gender": r.get::<String, _>("gender"),
+            "tier": r.get::<String, _>("tier"),
             "earned": true,
             "earned_at": r.get::<chrono::DateTime<chrono::Utc>, _>("earned_at")
         })
@@ -101,7 +102,7 @@ async fn fetch_user_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<serde
     use sqlx::Row;
     let rows = sqlx::query(
         r#"
-        SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, b.gender,
+        SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, b.gender, b.tier,
                ub.earned_at
         FROM badges b
         LEFT JOIN user_badges ub ON ub.badge_id = b.id AND ub.user_id = $1
@@ -122,6 +123,7 @@ async fn fetch_user_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<serde
             "category": r.get::<String, _>("category"),
             "threshold": r.get::<i32, _>("threshold"),
             "gender": r.get::<String, _>("gender"),
+            "tier": r.get::<String, _>("tier"),
             "earned": earned_at.is_some(),
             "earned_at": earned_at
         })

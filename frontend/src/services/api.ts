@@ -3,9 +3,13 @@ import type {
   ApiResponse,
   Badge,
   City,
+  CityInsights,
   Connection,
   DateEntry,
+  ForumComment,
+  ForumTopic,
   FriendDate,
+  FriendStats,
   InviteResponse,
   Notification,
   Stats,
@@ -47,6 +51,8 @@ function mapStats(s: any): Stats {
     averageFaceRating: s.average_face_rating ?? null,
     averageBodyRating: s.average_body_rating ?? null,
     averageChatRating: s.average_chat_rating ?? null,
+    currentStreak: s.current_streak ?? 0,
+    longestStreak: s.longest_streak ?? 0,
   };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -208,6 +214,36 @@ export const api = {
       `/cities${countryCode ? `?country_code=${countryCode}` : ""}`,
     ),
 
+  getCityInsights: async (cityId: number): Promise<CityInsights> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = await request<any>(`/cities/${cityId}/insights`);
+    return {
+      totalDates: raw.total_dates,
+      avgRating: raw.avg_rating,
+      genderBreakdown: {
+        femaleCount: raw.gender_breakdown.female_count,
+        maleCount: raw.gender_breakdown.male_count,
+        otherCount: raw.gender_breakdown.other_count,
+        avgRatingFemale: raw.gender_breakdown.avg_rating_female,
+        avgRatingMale: raw.gender_breakdown.avg_rating_male,
+        avgFaceFemale: raw.gender_breakdown.avg_face_female,
+        avgBodyFemale: raw.gender_breakdown.avg_body_female,
+        avgChatFemale: raw.gender_breakdown.avg_chat_female,
+        avgFaceMale: raw.gender_breakdown.avg_face_male,
+        avgBodyMale: raw.gender_breakdown.avg_body_male,
+        avgChatMale: raw.gender_breakdown.avg_chat_male,
+      },
+      avgFace: raw.avg_face,
+      avgBody: raw.avg_body,
+      avgChat: raw.avg_chat,
+      heightDistribution: raw.height_distribution ?? [],
+      topActivities: raw.top_activities ?? [],
+      topVenues: raw.top_venues ?? [],
+      topMeetings: raw.top_meetings ?? [],
+      monthlyTrend: raw.monthly_trend ?? [],
+    };
+  },
+
   // Stats
   getStats: async (): Promise<Stats> => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -226,6 +262,7 @@ export const api = {
       requesterId: c.requester_id,
       responderId: c.responder_id,
       friendNickname: c.friend_nickname ?? null,
+      topBadgeIcon: c.top_badge_icon ?? null,
       color: c.color ?? "#FF5733",
       status: c.status,
       createdAt: c.created_at,
@@ -249,20 +286,50 @@ export const api = {
       body: JSON.stringify({ color }),
     }),
 
-  getFriendDates: async (): Promise<FriendDate[]> => {
+  getFriendDates: async (friendId?: string): Promise<FriendDate[]> => {
+    const qs = friendId ? `?friend_id=${friendId}` : "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const raw = await request<any[]>("/friends/dates");
+    const raw = await request<any[]>(`/friends/dates${qs}`);
     return raw.map((d) => ({
       id: d.id,
       countryCode: d.country_code,
       cityName: d.city_name ?? null,
-      color: d.color,
       cityId: d.city_id,
+      color: d.color,
       friendNickname: d.friend_nickname ?? null,
+      friendId: d.friend_id,
       longitude: d.longitude,
       latitude: d.latitude,
       dateAt: d.date_at,
+      gender: d.gender,
+      ageRange: d.age_range,
+      heightRange: d.height_range ?? null,
+      personNickname: d.person_nickname ?? null,
+      description: d.description ?? null,
+      rating: d.rating,
+      faceRating: d.face_rating ?? null,
+      bodyRating: d.body_rating ?? null,
+      chatRating: d.chat_rating ?? null,
+      tagIds: d.tag_ids ?? [],
     }));
+  },
+
+  getFriendStats: async (friendId: string): Promise<FriendStats> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = await request<any>(`/friends/${friendId}/stats`);
+    return {
+      totalDates: raw.total_dates,
+      uniqueCountries: raw.unique_countries,
+      uniqueCities: raw.unique_cities,
+      averageRating: raw.average_rating ?? null,
+      averageFaceRating: raw.average_face_rating ?? null,
+      averageBodyRating: raw.average_body_rating ?? null,
+      averageChatRating: raw.average_chat_rating ?? null,
+      badges: (raw.badges ?? []).map((b: any) => ({
+        id: b.id, name: b.name, icon: b.icon, category: b.category, gender: b.gender,
+      })),
+      topBadgeIcon: raw.top_badge_icon ?? null,
+    };
   },
 
   // Invites
@@ -321,6 +388,7 @@ export const api = {
       earned: b.earned,
       earnedAt: b.earned_at ?? null,
       gender: b.gender ?? "both",
+      tier: b.tier ?? "bronze",
     }));
   },
 
@@ -337,6 +405,7 @@ export const api = {
       earned: b.earned ?? true,
       earnedAt: b.earned_at ?? null,
       gender: b.gender ?? "both",
+      tier: b.tier ?? "bronze",
     }));
   },
 
@@ -362,4 +431,129 @@ export const api = {
     const raw = await request<any>("/notifications/unread-count");
     return raw.count ?? 0;
   },
+
+  // Forum
+  getForumTopics: async (params?: { category?: string; sort?: string; cursor?: string; limit?: number }): Promise<{ topics: ForumTopic[]; next_cursor?: string }> => {
+    const qs = new URLSearchParams();
+    if (params?.category) qs.set("category", params.category);
+    if (params?.sort) qs.set("sort", params.sort);
+    if (params?.cursor) qs.set("cursor", params.cursor);
+    if (params?.limit) qs.set("limit", String(params.limit));
+    const qstr = qs.toString();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = await request<any>(`/forum/topics${qstr ? `?${qstr}` : ""}`);
+    return {
+      topics: (raw.topics ?? raw).map((t: any) => ({
+        id: t.id,
+        title: t.title,
+        bodyPreview: t.body_preview ?? t.body?.substring(0, 200) ?? "",
+        body: t.body ?? "",
+        category: t.category,
+        isAnonymous: t.is_anonymous,
+        isPinned: t.is_pinned,
+        isLocked: t.is_locked,
+        likeCount: t.like_count,
+        commentCount: t.comment_count,
+        authorNickname: t.author_nickname ?? null,
+        topBadgeIcon: t.top_badge_icon ?? null,
+        liked: t.liked ?? false,
+        createdAt: t.created_at,
+      })),
+      next_cursor: raw.next_cursor,
+    };
+  },
+
+  getForumTopic: async (id: string): Promise<{ topic: ForumTopic; comments: ForumComment[] }> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = await request<any>(`/forum/topics/${id}`);
+    return {
+      topic: {
+        id: raw.topic.id,
+        title: raw.topic.title,
+        bodyPreview: "",
+        body: raw.topic.body,
+        category: raw.topic.category,
+        isAnonymous: raw.topic.is_anonymous,
+        isPinned: raw.topic.is_pinned,
+        isLocked: raw.topic.is_locked,
+        likeCount: raw.topic.like_count,
+        commentCount: raw.topic.comment_count,
+        authorNickname: raw.topic.author_nickname ?? null,
+        topBadgeIcon: raw.topic.top_badge_icon ?? null,
+        liked: raw.topic.liked ?? false,
+        createdAt: raw.topic.created_at,
+      },
+      comments: (raw.comments ?? []).map((c: any) => ({
+        id: c.id,
+        topicId: c.topic_id,
+        parentId: c.parent_id ?? null,
+        body: c.body,
+        depth: c.depth,
+        likeCount: c.like_count,
+        authorNickname: c.author_nickname ?? "Anonim",
+        topBadgeIcon: c.top_badge_icon ?? null,
+        liked: c.liked ?? false,
+        createdAt: c.created_at,
+        updatedAt: c.updated_at ?? null,
+        deleted: c.deleted ?? false,
+      })),
+    };
+  },
+
+  createForumTopic: (data: { title: string; body: string; category: string; is_anonymous?: boolean }) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    request<any>("/forum/topics", { method: "POST", body: JSON.stringify(data) }),
+
+  createForumComment: (topicId: string, data: { body: string; parent_id?: string }) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    request<any>(`/forum/topics/${topicId}/comments`, { method: "POST", body: JSON.stringify(data) }),
+
+  toggleForumLike: (data: { target_type: "topic" | "comment"; target_id: string }) =>
+    request<{ like_count: number; liked: boolean }>("/forum/like", { method: "POST", body: JSON.stringify(data) }),
+
+  deleteForumTopic: (id: string) => request<void>(`/forum/topics/${id}`, { method: "DELETE" }),
+
+  updateForumTopic: (id: string, data: { title?: string; body?: string }) =>
+    request<void>(`/forum/topics/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+
+  deleteForumComment: (id: string) => request<void>(`/forum/comments/${id}`, { method: "DELETE" }),
+
+  reportForumContent: (data: { target_type: "topic" | "comment"; target_id: string; reason: string; description?: string }) =>
+    request<{ message: string }>("/forum/report", { method: "POST", body: JSON.stringify(data) }),
+
+  getForumBanStatus: async (): Promise<{ isBanned: boolean; bannedUntil: string | null }> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = await request<any>("/forum/ban-status");
+    return { isBanned: raw.is_banned, bannedUntil: raw.banned_until ?? null };
+  },
+
+  // Privacy
+  getPrivacy: async (): Promise<{
+    shareCountries: boolean;
+    shareCities: boolean;
+    shareDates: boolean;
+    shareStats: boolean;
+  }> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = await request<any>("/privacy");
+    return {
+      shareCountries: raw.share_countries ?? true,
+      shareCities: raw.share_cities ?? false,
+      shareDates: raw.share_dates ?? false,
+      shareStats: raw.share_stats ?? true,
+    };
+  },
+
+  updatePrivacy: (data: {
+    share_countries?: boolean;
+    share_cities?: boolean;
+    share_dates?: boolean;
+    share_stats?: boolean;
+  }) =>
+    request<{
+      share_countries: boolean;
+      share_cities: boolean;
+      share_dates: boolean;
+      share_stats: boolean;
+    }>("/privacy", { method: "PUT", body: JSON.stringify(data) }),
 };

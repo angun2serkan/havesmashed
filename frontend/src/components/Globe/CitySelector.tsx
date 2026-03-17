@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { MapPin, Search, X, Loader2 } from "lucide-react";
+import { MapPin, Search, X, Loader2, BarChart3 } from "lucide-react";
 import { useLogStore } from "@/stores/logStore";
 import { api } from "@/services/api";
 import type { City } from "@/types";
@@ -7,9 +7,10 @@ import type { City } from "@/types";
 interface CitySelectorProps {
   countryCode: string;
   onClose: () => void;
+  onCityInsights?: (cityId: number, cityName: string) => void;
 }
 
-export function CitySelector({ countryCode, onClose }: CitySelectorProps) {
+export function CitySelector({ countryCode, onClose, onCityInsights }: CitySelectorProps) {
   const [search, setSearch] = useState("");
   const [cities, setCities] = useState<City[]>([]);
   const [loading, setLoading] = useState(true);
@@ -134,11 +135,22 @@ export function CitySelector({ countryCode, onClose }: CitySelectorProps) {
                     {count}
                   </span>
                 )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCityInsights?.(city.id, city.name);
+                  }}
+                  className="p-1 rounded text-dark-500 hover:text-accent-cyan transition-colors cursor-pointer"
+                  title="City Stats"
+                >
+                  <BarChart3 size={14} />
+                </button>
               </button>
             );
           })
         )}
       </div>
+
     </div>
   );
 }

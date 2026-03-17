@@ -21,16 +21,11 @@ function genderIndicator(gender: string) {
   }
 }
 
-function genderGlow(gender: string): string {
-  switch (gender) {
-    case "male":
-      return "border-blue-500/40 shadow-[0_0_15px_rgba(59,130,246,0.3)]";
-    case "female":
-      return "border-pink-500/40 shadow-[0_0_15px_rgba(236,72,153,0.3)]";
-    case "lgbt":
-      return "border-purple-500/40 shadow-[0_0_15px_rgba(168,85,247,0.3)]";
-    default:
-      return "border-neon-500/30 shadow-[0_0_15px_rgba(255,0,127,0.2)]";
+function tierStyle(tier: string): { borderColor: string; glowColor: string; label: string } {
+  switch (tier) {
+    case "gold": return { borderColor: "#facc15", glowColor: "rgba(250,204,21,0.3)", label: "GOLD" };
+    case "silver": return { borderColor: "#94a3b8", glowColor: "rgba(148,163,184,0.3)", label: "SILVER" };
+    default: return { borderColor: "#d97706", glowColor: "rgba(217,119,6,0.2)", label: "BRONZE" };
   }
 }
 
@@ -91,14 +86,24 @@ export function BadgeGrid({ badges, showLocked = false }: BadgeGridProps) {
         </p>
       ) : (
         <div className="grid grid-cols-3 md:grid-cols-4 gap-3">
-          {visible.map((badge) => (
+          {visible.map((badge) => {
+            const ts = badge.earned ? tierStyle(badge.tier) : null;
+            return (
             <div
               key={badge.id}
               className={`group relative rounded-xl p-3 text-center transition-all duration-200 ${
                 badge.earned
-                  ? `bg-dark-800 border ${genderGlow(badge.gender)} ${genderHoverGlow(badge.gender)} hover:scale-105 cursor-default`
+                  ? `bg-dark-800 border ${genderHoverGlow(badge.gender)} hover:scale-105 cursor-default`
                   : "bg-dark-900 border border-dark-700 opacity-40"
               }`}
+              style={
+                badge.earned && ts
+                  ? {
+                      borderColor: ts.borderColor,
+                      boxShadow: `0 0 15px ${ts.glowColor}`,
+                    }
+                  : undefined
+              }
             >
               {/* Lock overlay for unearned */}
               {!badge.earned && (
@@ -107,8 +112,18 @@ export function BadgeGrid({ badges, showLocked = false }: BadgeGridProps) {
                 </div>
               )}
 
+              {/* Tier label for earned badges */}
+              {badge.earned && ts && (
+                <span
+                  className="absolute top-1 right-1 text-[7px] font-bold uppercase tracking-wider px-1 rounded"
+                  style={{ color: ts.borderColor, backgroundColor: `${ts.borderColor}15` }}
+                >
+                  {ts.label}
+                </span>
+              )}
+
               {/* Gender indicator */}
-              <div className="absolute top-1.5 right-1.5">
+              <div className={`absolute top-1.5 ${badge.earned ? "left-1.5" : "right-1.5"}`}>
                 {genderIndicator(badge.gender)}
               </div>
 
@@ -148,7 +163,8 @@ export function BadgeGrid({ badges, showLocked = false }: BadgeGridProps) {
                 </p>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
