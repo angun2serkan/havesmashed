@@ -154,6 +154,27 @@ async fn fetch_tag_ids(db: &sqlx::PgPool, date_id: Uuid) -> Result<Vec<i32>, App
     Ok(tags)
 }
 
+/// Batch fetch tags for multiple dates in a single query (avoids N+1).
+async fn fetch_tags_batch(db: &sqlx::PgPool, date_ids: &[Uuid]) -> Result<std::collections::HashMap<Uuid, Vec<i32>>, AppError> {
+    use sqlx::Row;
+    let mut map: std::collections::HashMap<Uuid, Vec<i32>> = std::collections::HashMap::new();
+    if date_ids.is_empty() { return Ok(map); }
+
+    let rows = sqlx::query(
+        "SELECT date_id, tag_id FROM date_tags WHERE date_id = ANY($1) ORDER BY date_id, tag_id",
+    )
+    .bind(date_ids)
+    .fetch_all(db)
+    .await?;
+
+    for row in rows {
+        let did: Uuid = row.get("date_id");
+        let tid: i32 = row.get("tag_id");
+        map.entry(did).or_default().push(tid);
+    }
+    Ok(map)
+}
+
 async fn replace_tags(db: &sqlx::PgPool, date_id: Uuid, tag_ids: &[i32]) -> Result<(), AppError> {
     // Delete existing tags
     sqlx::query("DELETE FROM date_tags WHERE date_id = $1")
@@ -356,11 +377,15 @@ async fn list_dates(
     };
 
     let has_more = rows.len() as i64 > limit;
-    let mut dates: Vec<DateResponse> = Vec::new();
+    let taken_rows: Vec<_> = rows.into_iter().take(limit as usize).collect();
 
-    for row in rows.into_iter().take(limit as usize) {
+    // Batch fetch all tags in one query instead of N+1
+    let date_ids: Vec<Uuid> = taken_rows.iter().map(|r| r.get(0)).collect();
+    let tags_map = fetch_tags_batch(&state.db, &date_ids).await?;
+
+    let mut dates: Vec<DateResponse> = Vec::new();
+    for row in taken_rows {
         let date_id: Uuid = row.get(0);
-        let tag_ids = fetch_tag_ids(&state.db, date_id).await?;
         dates.push(DateResponse {
             id: date_id,
             country_code: row.get(1),
@@ -378,7 +403,7 @@ async fn list_dates(
             body_rating: row.get(13),
             chat_rating: row.get(14),
             date_at: row.get(15),
-            tag_ids,
+            tag_ids: tags_map.get(&date_id).cloned().unwrap_or_default(),
             created_at: row.get(16),
             updated_at: row.get(17),
         });

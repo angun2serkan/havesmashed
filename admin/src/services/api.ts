@@ -70,4 +70,11 @@ export const adminApi = {
 
   // Invites
   createPlatformInvite: () => request<{ token: string; link: string; expires_in_secs: number }>('/admin/invites', { method: 'POST' }),
+
+  // Forum
+  getForumTopics: () => request<any[]>('/admin/forum/topics'),
+  deleteForumTopic: (id: string) => request<null>(`/admin/forum/topics/${id}`, { method: 'DELETE' }),
+  toggleForumPin: (id: string) => request<any>(`/admin/forum/topics/${id}/pin`, { method: 'PUT' }),
+  toggleForumLock: (id: string) => request<any>(`/admin/forum/topics/${id}/lock`, { method: 'PUT' }),
+  deleteForumComment: (id: string) => request<null>(`/admin/forum/comments/${id}`, { method: 'DELETE' }),
 }

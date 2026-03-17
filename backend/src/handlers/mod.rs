@@ -6,6 +6,7 @@ pub mod connections;
 pub mod countries;
 pub mod dates;
 pub mod feed;
+pub mod forum;
 pub mod friends;
 pub mod notifications;
 pub mod stats;
@@ -28,6 +29,7 @@ pub fn api_router() -> Router<AppState> {
         .nest("/friends", friends::router())
         .nest("/stats", stats::router())
         .nest("/feed", feed::router())
+        .nest("/forum", forum::router())
         .nest("/notifications", notifications::router())
         .nest("/admin", admin::router())
 }

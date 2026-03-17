@@ -3,6 +3,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -44,6 +45,7 @@ pub struct ConnectionEntry {
     pub requester_id: Uuid,
     pub responder_id: Uuid,
     pub friend_nickname: Option<String>,
+    pub top_badge_icon: Option<String>,
     pub color: String,
     pub status: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -321,10 +323,13 @@ async fn list_connections(
     Query(params): Query<ListConnectionsQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let connections = if let Some(ref status) = params.status {
-        sqlx::query_as::<_, (Uuid, Uuid, Uuid, Option<String>, String, String, chrono::DateTime<chrono::Utc>)>(
+        sqlx::query(
             r#"
             SELECT c.id, c.requester_id, c.responder_id,
                    CASE WHEN c.requester_id = $1 THEN u2.nickname ELSE u1.nickname END AS friend_nickname,
+                   (SELECT b.icon FROM user_badges ub JOIN badges b ON b.id = ub.badge_id
+                    WHERE ub.user_id = CASE WHEN c.requester_id = $1 THEN c.responder_id ELSE c.requester_id END
+                    ORDER BY b.id DESC LIMIT 1) AS top_badge_icon,
                    c.color, c.status, c.created_at
             FROM connections c
             JOIN users u1 ON u1.id = c.requester_id
@@ -338,10 +343,13 @@ async fn list_connections(
         .fetch_all(&state.db)
         .await?
     } else {
-        sqlx::query_as::<_, (Uuid, Uuid, Uuid, Option<String>, String, String, chrono::DateTime<chrono::Utc>)>(
+        sqlx::query(
             r#"
             SELECT c.id, c.requester_id, c.responder_id,
                    CASE WHEN c.requester_id = $1 THEN u2.nickname ELSE u1.nickname END AS friend_nickname,
+                   (SELECT b.icon FROM user_badges ub JOIN badges b ON b.id = ub.badge_id
+                    WHERE ub.user_id = CASE WHEN c.requester_id = $1 THEN c.responder_id ELSE c.requester_id END
+                    ORDER BY b.id DESC LIMIT 1) AS top_badge_icon,
                    c.color, c.status, c.created_at
             FROM connections c
             JOIN users u1 ON u1.id = c.requester_id
@@ -358,13 +366,14 @@ async fn list_connections(
     let entries: Vec<ConnectionEntry> = connections
         .into_iter()
         .map(|row| ConnectionEntry {
-            id: row.0,
-            requester_id: row.1,
-            responder_id: row.2,
-            friend_nickname: row.3,
-            color: row.4,
-            status: row.5,
-            created_at: row.6,
+            id: row.get("id"),
+            requester_id: row.get("requester_id"),
+            responder_id: row.get("responder_id"),
+            friend_nickname: row.get("friend_nickname"),
+            top_badge_icon: row.get("top_badge_icon"),
+            color: row.get("color"),
+            status: row.get("status"),
+            created_at: row.get("created_at"),
         })
         .collect();
 

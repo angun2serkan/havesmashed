@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { LayoutDashboard, MapPin, Award, Bell, Users, LogOut } from 'lucide-react'
+import { LayoutDashboard, MapPin, Award, Bell, Users, MessageSquare, LogOut } from 'lucide-react'
 import { useAdminStore } from '@/stores/adminStore'
 
 const navItems = [
@@ -8,6 +8,7 @@ const navItems = [
   { to: '/badges', icon: Award, label: 'Badges' },
   { to: '/notifications', icon: Bell, label: 'Notifications' },
   { to: '/users', icon: Users, label: 'Users' },
+  { to: '/forum', icon: MessageSquare, label: 'Forum' },
 ]
 
 export default function Layout() {

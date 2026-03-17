@@ -105,6 +105,12 @@ pub fn router() -> Router<AppState> {
         .route("/users/{id}", get(get_user))
         // Invites
         .route("/invites", post(create_platform_invite))
+        // Forum
+        .route("/forum/topics", get(list_forum_topics_admin))
+        .route("/forum/topics/{id}", delete(delete_forum_topic_admin))
+        .route("/forum/topics/{id}/pin", put(toggle_pin))
+        .route("/forum/topics/{id}/lock", put(toggle_lock))
+        .route("/forum/comments/{id}", delete(delete_forum_comment_admin))
 }
 
 // ── Dashboard ──────────────────────────────────────────────────
@@ -805,6 +811,155 @@ async fn create_platform_invite(
             "link": link,
             "expires_in_secs": 86400
         },
+        "error": null
+    })))
+}
+
+// ── Forum management ──────────────────────────────────────────
+
+/// GET /api/admin/forum/topics
+async fn list_forum_topics_admin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config)?;
+
+    use sqlx::Row;
+    let rows = sqlx::query(
+        r#"
+        SELECT t.id, t.user_id, t.title, t.body, t.category, t.is_anonymous,
+               t.is_pinned, t.is_locked, t.like_count, t.comment_count,
+               t.created_at, t.updated_at, t.deleted_at,
+               u.nickname AS author_nickname
+        FROM forum_topics t
+        JOIN users u ON u.id = t.user_id
+        ORDER BY t.created_at DESC
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let topics: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.get::<Uuid, _>("id"),
+                "user_id": r.get::<Uuid, _>("user_id"),
+                "title": r.get::<String, _>("title"),
+                "body": r.get::<String, _>("body"),
+                "category": r.get::<String, _>("category"),
+                "is_anonymous": r.get::<bool, _>("is_anonymous"),
+                "is_pinned": r.get::<bool, _>("is_pinned"),
+                "is_locked": r.get::<bool, _>("is_locked"),
+                "like_count": r.get::<i32, _>("like_count"),
+                "comment_count": r.get::<i32, _>("comment_count"),
+                "created_at": r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+                "updated_at": r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("updated_at"),
+                "deleted_at": r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("deleted_at"),
+                "author_nickname": r.get::<Option<String>, _>("author_nickname"),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({ "success": true, "data": topics, "error": null })))
+}
+
+/// DELETE /api/admin/forum/topics/:id (hard delete)
+async fn delete_forum_topic_admin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config)?;
+
+    let result = sqlx::query("DELETE FROM forum_topics WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Topic not found".to_string()));
+    }
+
+    Ok(Json(json!({
+        "success": true,
+        "data": { "id": id, "message": "Topic hard deleted" },
+        "error": null
+    })))
+}
+
+/// PUT /api/admin/forum/topics/:id/pin
+async fn toggle_pin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config)?;
+
+    use sqlx::Row;
+    let row = sqlx::query(
+        "UPDATE forum_topics SET is_pinned = NOT is_pinned WHERE id = $1 RETURNING is_pinned",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Topic not found".to_string()))?;
+
+    let is_pinned: bool = row.get("is_pinned");
+
+    Ok(Json(json!({
+        "success": true,
+        "data": { "id": id, "is_pinned": is_pinned },
+        "error": null
+    })))
+}
+
+/// PUT /api/admin/forum/topics/:id/lock
+async fn toggle_lock(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config)?;
+
+    use sqlx::Row;
+    let row = sqlx::query(
+        "UPDATE forum_topics SET is_locked = NOT is_locked WHERE id = $1 RETURNING is_locked",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Topic not found".to_string()))?;
+
+    let is_locked: bool = row.get("is_locked");
+
+    Ok(Json(json!({
+        "success": true,
+        "data": { "id": id, "is_locked": is_locked },
+        "error": null
+    })))
+}
+
+/// DELETE /api/admin/forum/comments/:id (hard delete)
+async fn delete_forum_comment_admin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config)?;
+
+    let result = sqlx::query("DELETE FROM forum_comments WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Comment not found".to_string()));
+    }
+
+    Ok(Json(json!({
+        "success": true,
+        "data": { "id": id, "message": "Comment hard deleted" },
         "error": null
     })))
 }

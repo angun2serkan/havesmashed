@@ -131,59 +131,47 @@ async fn fetch_user_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<serde
 }
 
 /// Check and award badges for a user. Call this after date creation or friend addition.
+/// Uses a single CTE query for all metrics instead of 8 separate queries.
 pub async fn check_and_award_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<String>, AppError> {
+    use sqlx::Row;
     let mut newly_earned: Vec<String> = Vec::new();
 
-    // Count dates by gender of partner
-    let female_date_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM dates WHERE user_id = $1 AND gender = 'female' AND deleted_at IS NULL"
-    ).bind(user_id).fetch_one(db).await?;
+    // Single query: all metrics + all badges + already earned — 8 queries → 1
+    let stats_row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*) FILTER (WHERE gender = 'female') AS female_count,
+            COUNT(*) FILTER (WHERE gender = 'male') AS male_count,
+            COUNT(*) FILTER (WHERE gender = 'other') AS other_count,
+            COUNT(DISTINCT country_code) AS country_count,
+            COUNT(DISTINCT city_id) AS city_count,
+            CASE WHEN COUNT(*) >= 5 THEN AVG(rating)::float8 ELSE NULL END AS avg_rating
+        FROM dates
+        WHERE user_id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(user_id)
+    .fetch_one(db)
+    .await?;
 
-    let male_date_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM dates WHERE user_id = $1 AND gender = 'male' AND deleted_at IS NULL"
-    ).bind(user_id).fetch_one(db).await?;
-
-    let other_date_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM dates WHERE user_id = $1 AND gender = 'other' AND deleted_at IS NULL"
-    ).bind(user_id).fetch_one(db).await?;
+    let female_date_count: i64 = stats_row.get("female_count");
+    let male_date_count: i64 = stats_row.get("male_count");
+    let other_date_count: i64 = stats_row.get("other_count");
+    let country_count: i64 = stats_row.get("country_count");
+    let city_count: i64 = stats_row.get("city_count");
+    let avg_rating: Option<f64> = stats_row.get("avg_rating");
 
     let total_date_count = female_date_count + male_date_count + other_date_count;
-
-    // Has dated both genders?
     let has_both = female_date_count > 0 && male_date_count > 0;
     let has_other = other_date_count > 0;
-    // Total dates that qualify for LGBT (both genders combined, when has_both)
-    let lgbt_qualifying_count = if has_both || has_other {
-        total_date_count
-    } else {
-        0
-    };
+    let lgbt_qualifying_count = if has_both || has_other { total_date_count } else { 0 };
 
-    // Country/city counts
-    let country_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(DISTINCT country_code) FROM dates WHERE user_id = $1 AND deleted_at IS NULL"
-    ).bind(user_id).fetch_one(db).await?;
-
-    let city_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(DISTINCT city_id) FROM dates WHERE user_id = $1 AND deleted_at IS NULL"
-    ).bind(user_id).fetch_one(db).await?;
-
-    // Average rating (only if >= 5 dates)
-    let avg_rating: Option<f64> = if total_date_count >= 5 {
-        sqlx::query_scalar::<_, Option<f64>>(
-            "SELECT AVG(rating)::float8 FROM dates WHERE user_id = $1 AND deleted_at IS NULL"
-        ).bind(user_id).fetch_one(db).await?
-    } else {
-        None
-    };
-
-    // Friend count
+    // Friend count (separate table, still 1 query)
     let friend_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM connections WHERE (requester_id = $1 OR responder_id = $1) AND status = 'accepted'"
     ).bind(user_id).fetch_one(db).await?;
 
-    // Get all badges and already earned
-    use sqlx::Row;
+    // Badges + earned in one round trip
     let all_badges = sqlx::query("SELECT id, name, category, threshold, gender FROM badges ORDER BY id")
         .fetch_all(db).await?;
     let earned_ids: Vec<i32> = sqlx::query_scalar::<_, i32>(
@@ -199,28 +187,20 @@ pub async fn check_and_award_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<
         let gender: String = badge.get("gender");
 
         let qualifies = match (category.as_str(), gender.as_str()) {
-            // Male badges: count of dates with women (gender='female')
             ("dates", "male") => female_date_count >= threshold as i64,
-            // Female badges: count of dates with men (gender='male')
             ("dates", "female") => male_date_count >= threshold as i64,
-            // LGBT badges: must have dated both genders OR other
             ("dates", "lgbt") => {
                 if threshold == 1 {
-                    // "Merakli" -- first other date OR has dated both genders
                     has_both || has_other
                 } else {
-                    // Higher thresholds require has_both/has_other AND total count
                     (has_both || has_other) && lgbt_qualifying_count >= threshold as i64
                 }
             },
-            // Explore badges
             ("explore", _) => {
                 if badge_id <= 15 { country_count >= threshold as i64 }
                 else { city_count >= threshold as i64 }
             },
-            // Quality
             ("quality", _) => avg_rating.map_or(false, |r| r >= threshold as f64),
-            // Social
             ("social", _) => friend_count >= threshold as i64,
             _ => false,
         };

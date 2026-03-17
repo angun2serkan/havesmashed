@@ -7,6 +7,7 @@ import CitiesPage from '@/pages/CitiesPage'
 import BadgesPage from '@/pages/BadgesPage'
 import NotificationsPage from '@/pages/NotificationsPage'
 import UsersPage from '@/pages/UsersPage'
+import ForumPage from '@/pages/ForumPage'
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAdminStore((s) => s.isAuthenticated)
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="/badges" element={<BadgesPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/users" element={<UsersPage />} />
+        <Route path="/forum" element={<ForumPage />} />
       </Route>
     </Routes>
   )
