@@ -7,7 +7,6 @@ export default function LoginPage() {
   const [key, setKey] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const setApiKey = useAdminStore((s) => s.setApiKey)
   const navigate = useNavigate()
 
   async function handleSubmit(e: FormEvent) {

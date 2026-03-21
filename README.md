@@ -1,106 +1,195 @@
 # havesmashed
 
-Date tracking app with interactive globe visualization, friend system, badges, and admin panel.
+Date tracking app with interactive globe visualization, friend system, badges, forum, and admin panel.
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Backend | Rust, Axum, SQLx, PostgreSQL 16 + PostGIS, Redis |
+| Backend | Rust (Axum), SQLx, PostgreSQL 16, Redis |
 | Frontend | React 19, TypeScript, Vite, Tailwind CSS, react-globe.gl |
-| Admin Panel | React, TypeScript, Vite, Tailwind CSS, Leaflet |
+| Admin | React 19, TypeScript, Vite, Tailwind CSS |
 
-## Prerequisites
+---
 
-- **Rust** (latest stable) — [rustup.rs](https://rustup.rs)
-- **Node.js** (v18+) — [nodejs.org](https://nodejs.org)
-- **PostgreSQL 16** with **PostGIS** extension
-- **Redis**
+## Quick Start with Docker
 
-### macOS (Homebrew)
+Hicbir sey kurmana gerek yok — sadece Docker.
 
+### 1. Docker Kur
+
+**macOS:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) indir ve kur.
+
+**Ubuntu:**
 ```bash
-# Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# PostgreSQL + PostGIS
-brew install postgresql@16 postgis
-brew services start postgresql@16
-
-# Redis
-brew install redis
-brew services start redis
-
-# Node.js (if not installed)
-brew install node
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+# Terminali kapat-ac
 ```
 
-### Ubuntu/Debian
-
-```bash
-# Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# PostgreSQL + PostGIS
-sudo apt install postgresql-16 postgresql-16-postgis-3
-
-# Redis
-sudo apt install redis-server
-
-# Node.js
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install nodejs
-```
-
-## Setup
-
-### 1. Clone the repo
+### 2. Repoyu Cek
 
 ```bash
 git clone <repo-url>
 cd haveismashedV2
 ```
 
-### 2. Create the database
+### 3. Ortam Dosyasini Olustur
 
 ```bash
-psql postgres -c "CREATE DATABASE havesmashed;"
+cp .env.example .env
 ```
 
-> PostGIS and pgcrypto extensions are automatically created by the first migration.
+`.env` dosyasini ac ve degerleri degistir:
 
-### 3. Configure the backend
+```env
+POSTGRES_PASSWORD=guclu_bir_sifre
+REDIS_PASSWORD=guclu_bir_redis_sifresi
+JWT_SECRET=en_az_32_karakter_rastgele_bir_metin
+JWT_EXPIRY=604800
+ADMIN_API_KEY=admin_paneli_icin_guclu_anahtar
+```
+
+### 4. Baslat
+
+```bash
+docker compose up --build
+```
+
+> Ilk calistirmada Rust backend derleniyor, **5-10 dakika** surebilir. Sonrakiler cache sayesinde hizlidir.
+
+### 5. Test Verilerini Yukle (Opsiyonel)
+
+Seed data ile 5 hazir test kullanicisi ve ornek date'ler yuklenir:
+
+```bash
+docker compose cp backend/seed.sql postgres:/tmp/seed.sql
+docker compose exec postgres psql -U havesmashed -d havesmashed -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+docker compose exec postgres psql -U havesmashed -d havesmashed -f /tmp/seed.sql
+```
+
+Test giris bilgileri icin `backend/seed_data.json` dosyasina bak. Ornek:
+- **ahmet:** `abandon ability able about above absent absorb abstract absurd abuse access accident`
+
+### 6. Kullan
+
+| Servis | Adres |
+|--------|-------|
+| **Frontend** | http://localhost |
+| **Admin Panel** | http://localhost:8080 |
+| **API** | http://localhost:3000 |
+
+### Docker Komutlari
+
+```bash
+docker compose up -d              # Arka planda baslat
+docker compose down               # Durdur
+docker compose down -v            # Durdur + veritabanini sil (sifirdan basla)
+docker compose logs -f backend    # Backend loglarini izle
+docker compose up --build backend # Sadece backend'i yeniden derle
+```
+
+---
+
+## Quick Start without Docker (Manuel Kurulum)
+
+### Gereksinimler
+
+| Yazilim | Versiyon | Neden |
+|---------|----------|-------|
+| Rust | stable (latest) | Backend'i derlemek |
+| Node.js | 18+ | Frontend, Admin, Mobile |
+| PostgreSQL | 16 | Veritabani |
+| Redis | 7+ | Oturum cache |
+
+### macOS Kurulumu
+
+```bash
+# Homebrew yoksa:
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Gerekli yazilimlari kur
+brew install postgresql@16 redis node
+brew services start postgresql@16
+brew services start redis
+
+# Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+```
+
+### Ubuntu / Debian Kurulumu
+
+```bash
+# PostgreSQL 16
+sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+sudo apt update && sudo apt install -y postgresql-16 redis-server
+
+# Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+
+# Node.js 20
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+### Projeyi Calistir
+
+#### 1. Veritabanini olustur
+
+```bash
+# macOS (Homebrew — sifresiz, kendi kullanici adinla):
+createdb havesmashed
+
+# Ubuntu:
+sudo -u postgres psql -c "CREATE DATABASE havesmashed;"
+```
+
+#### 2. Backend'i yapilandir
 
 ```bash
 cd backend
 cp .env.example .env.dev
 ```
 
-Edit `backend/.env.dev`:
+`.env.dev` dosyasini duzenle:
 
 ```env
-DATABASE_URL=postgres://YOUR_USERNAME@localhost:5432/havesmashed
+# macOS: whoami komutunun ciktisini KULLANICI_ADIN yerine yaz
+DATABASE_URL=postgres://KULLANICI_ADIN@localhost:5432/havesmashed
+
+# Ubuntu: postgres kullanicisiyla
+# DATABASE_URL=postgres://postgres:SIFREN@localhost:5432/havesmashed
+
 REDIS_URL=redis://127.0.0.1:6379
-JWT_SECRET=pick_any_random_string_at_least_32_characters
-ADMIN_API_KEY=pick_any_random_admin_key
+JWT_SECRET=herhangi_rastgele_metin_en_az_32_karakter
+JWT_EXPIRY=604800
+ADMIN_API_KEY=herhangi_bir_admin_anahtari
+HOST=0.0.0.0
+PORT=3000
 ```
 
-> On macOS with Homebrew, `YOUR_USERNAME` is your system username (run `whoami`). No password needed.
+> **Kullanici adin ne?** Terminal'de `whoami` yaz.
 
-### 4. Start the backend
+#### 3. Backend'i baslat
 
 ```bash
 cd backend
 cargo run
 ```
 
-First run will:
-- Compile the project (~1-2 min first time)
-- Run all 9 database migrations automatically
-- Seed 97 cities, 103 tags, and 12 badges
-- Start the API server on `http://localhost:3000`
+Ilk calistirmada:
+- Rust bagimliliklari indirilir ve derlenir (~2-5 dk, bir kere olur)
+- 18 migration calisir (tablolar, indexler, constraint'ler olusur)
+- 127 sehir, 103 tag, 19 badge otomatik eklenir (seed data)
+- `pgcrypto` eklentisi otomatik yuklenir
+- Sunucu `http://localhost:3000` adresinde baslar
 
-### 5. Start the frontend
+**Basarili cikti:** `Starting server on 0.0.0.0:3000`
+
+#### 4. Frontend'i baslat (yeni terminal)
 
 ```bash
 cd frontend
@@ -108,9 +197,9 @@ npm install
 npm run dev
 ```
 
-Opens on `http://localhost:5173`
+Acilan adres: **http://localhost:5173**
 
-### 6. Start the admin panel (optional)
+#### 5. Admin paneli (yeni terminal, opsiyonel)
 
 ```bash
 cd admin
@@ -118,79 +207,164 @@ npm install
 npm run dev
 ```
 
-Opens on `http://localhost:5174`. Login with the `ADMIN_API_KEY` you set in `.env.dev`.
+Acilan adres: **http://localhost:5174**
 
-## Usage
+Giris icin `.env.dev` dosyasindaki `ADMIN_API_KEY` degerini gir.
 
-### First time
-1. Open `http://localhost:5173`
-2. Click "Create Account" — you'll get a 12-word secret phrase. **Save it.**
-3. Set a nickname
-4. Click on a country on the globe → select a city → fill out the date form
+#### 6. Mobil uygulama (yeni terminal, opsiyonel)
 
-### Adding friends
-1. Go to Friends page → "Generate Friend Code"
-2. Share the 8-character code with your friend
-3. Your friend enters the code in their Friends page → "Add Friend"
+```bash
+cd mobile
+npm install
+npx expo start
+```
 
-### Admin panel
-1. Open `http://localhost:5174`
-2. Enter the `ADMIN_API_KEY`
-3. Manage cities, badges, notifications, and view user stats
+Sonra `i` (iOS simulator) veya telefondaki Expo Go uygulamasiyla QR kod tara.
 
-## Project Structure
+### Terminaller Ozeti
+
+```
+Terminal 1:  cd backend  && cargo run           → localhost:3000 (API)
+Terminal 2:  cd frontend && npm run dev         → localhost:5173 (Web)
+Terminal 3:  cd admin    && npm run dev         → localhost:5174 (Admin)
+Terminal 4:  cd mobile   && npx expo start      → Expo (Mobil)
+```
+
+---
+
+## Sik Karsilasilan Hatalar
+
+| Hata Mesaji | Sebep | Cozum |
+|-------------|-------|-------|
+| `DATABASE_URL must be set` | `.env.dev` yok | `cp .env.example .env.dev` |
+| `connection refused (5432)` | PostgreSQL kapali | `brew services start postgresql@16` |
+| `database "havesmashed" does not exist` | DB olusturulmamis | `createdb havesmashed` |
+| `connection refused (6379)` | Redis kapali | `brew services start redis` |
+| `role "xxx" does not exist` | PG kullanicisi yok | `createuser -s $(whoami)` (macOS) |
+| `address already in use :3000` | Port kullaniliyor | `lsof -i :3000` bul, `kill <PID>` |
+| Docker build yavas | Rust ilk derleme | Normal, ~10 dk. Cache sonra hizli |
+| `docker: permission denied` | Docker grubunda degilsin | `sudo usermod -aG docker $USER` + cikis/giris |
+
+---
+
+## Kullanim
+
+### Ilk Kullanim
+
+1. http://localhost:5173 ac (Docker'da http://localhost)
+2. "Create Account" tikla — 12 kelimelik gizli cumle (seed phrase) verilir. **Kaydet!**
+3. Bir kullanici adi (nickname) sec
+4. Globe'da bir ulkeye tikla → sehir sec → date formunu doldur
+
+### Arkadas Ekleme
+
+1. Friends sayfasi → "Generate Friend Code"
+2. 8 haneli kodu arkadasinla paylas
+3. Arkadasin kendi Friends sayfasinda kodu girer → "Add Friend"
+
+### Admin Paneli
+
+1. http://localhost:5174 ac (Docker'da http://localhost:8080)
+2. `ADMIN_API_KEY` degerini gir
+3. Sehir, badge, bildirim yonet ve kullanici istatistiklerini gor
+
+---
+
+## Proje Yapisi
 
 ```
 haveismashedV2/
-├── backend/              # Rust API server
+├── backend/                  # Rust API (Axum framework)
 │   ├── src/
-│   │   ├── handlers/     # Route handlers (auth, dates, connections, badges, admin, etc.)
-│   │   ├── services/     # Business logic (crypto, invites, wordlist)
-│   │   ├── middleware/    # JWT auth middleware
-│   │   └── main.rs       # Entry point
-│   └── migrations/       # SQL migrations (auto-run on startup)
+│   │   ├── handlers/         # HTTP endpoint handler'lari
+│   │   ├── services/         # Is mantigi (kripto, davet, kelime listesi)
+│   │   ├── middleware/       # JWT kimlik dogrulama
+│   │   ├── config.rs         # Ortam degiskeni yukleme
+│   │   └── main.rs           # Giris noktasi
+│   ├── migrations/           # 18 SQL migration (baslangicta otomatik calisir)
+│   ├── Cargo.toml
+│   └── .env.example
 │
-├── frontend/             # Main React app (port 5173)
+├── frontend/                 # React web uygulamasi
 │   └── src/
-│       ├── pages/        # Route pages
-│       ├── components/   # UI components (Globe, DateEntry, Friends, Badges, etc.)
-│       ├── services/     # API client
-│       ├── stores/       # Zustand state stores
-│       └── data/         # Tag definitions, country mappings
+│       ├── pages/            # Sayfa bilesenleri
+│       ├── components/       # Globe, DateEntry, Friends, Forum, Badges...
+│       ├── services/api.ts   # API istemcisi
+│       ├── stores/           # Zustand state yonetimi
+│       └── data/             # Tag ve ulke esleme verileri
 │
-└── admin/                # Admin React app (port 5174)
-    └── src/
-        ├── pages/        # Dashboard, Cities, Badges, Notifications, Users
-        ├── services/     # Admin API client
-        └── stores/       # Admin auth store
+├── admin/                    # React admin paneli
+│   └── src/
+│       ├── pages/            # Dashboard, Cities, Badges, Users...
+│       └── services/         # Admin API istemcisi
+│
+├── mobile/                   # React Native (Expo)
+│   └── src/
+│       ├── screens/          # 16 ekran
+│       ├── components/       # 31 bilesen
+│       ├── hooks/            # 8 custom hook
+│       └── services/api.ts   # API istemcisi
+│
+├── docker-compose.yml        # Tek komutla tum servisleri baslat
+├── .env.example              # Docker icin ortam degiskeni sablonu
+└── README.md
 ```
 
-## API Overview
+---
 
-| Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
-| `/api/auth/register` | POST | - | Create account, get 12-word phrase |
-| `/api/auth/login` | POST | - | Login with phrase |
-| `/api/auth/nickname` | PUT | JWT | Set nickname |
-| `/api/dates` | GET/POST | JWT | List/create dates |
-| `/api/dates/:id` | GET/PUT/DELETE | JWT | Date CRUD |
-| `/api/cities` | GET | JWT | List cities |
-| `/api/tags` | GET/POST | JWT | List/create tags |
-| `/api/connections` | GET | JWT | List friends |
-| `/api/connections/add` | POST | JWT | Add friend by code |
-| `/api/invites/create` | POST | JWT | Generate invite/friend code |
-| `/api/stats` | GET | JWT | User statistics |
-| `/api/badges/me` | GET | JWT | User's badges |
-| `/api/notifications` | GET | JWT | User notifications |
-| `/api/friends/dates` | GET | JWT | Friends' dates for globe |
-| `/api/admin/*` | Various | Admin Key | Admin CRUD endpoints |
+## Veritabani
 
-## Resetting the Database
+### Migration Sistemi
 
-If you need a fresh start:
+Backend her basladiginda `sqlx::migrate!()` otomatik calisir. Her migration dosyasi **sadece bir kez** calisir ve `_sqlx_migrations` tablosunda kaydedilir.
+
+### Seed Data (Otomatik Eklenir)
+
+| Veri | Miktar | Migration |
+|------|--------|-----------|
+| Sehirler | 127 (6 kitadan) | 002_seed_cities.sql |
+| Etiketler | 103 (7 kategoride) | 003_seed_tags.sql + 004 |
+| Rozetler | 19 (erkek/kadin/LGBT/genel) | 012_new_badges.sql |
+
+### Veritabanini Sifirlamak
 
 ```bash
-psql postgres -c "DROP DATABASE havesmashed;"
-psql postgres -c "CREATE DATABASE havesmashed;"
-cargo run  # migrations re-run automatically
+# Manuel kurulumda:
+dropdb havesmashed && createdb havesmashed
+cargo run    # migration'lar tekrar calisir
+
+# Docker'da:
+docker compose down -v    # volume'lari da siler
+docker compose up --build
 ```
+
+---
+
+## API Genel Bakis
+
+| Endpoint | Method | Auth | Aciklama |
+|----------|--------|------|----------|
+| `/api/auth/register` | POST | - | Hesap olustur (12 kelime al) |
+| `/api/auth/login` | POST | - | Seed phrase ile giris |
+| `/api/auth/nickname` | PUT | JWT | Nickname belirle |
+| `/api/dates` | GET/POST | JWT | Date listele / olustur |
+| `/api/dates/:id` | GET/PUT/DELETE | JWT | Date CRUD |
+| `/api/cities` | GET | JWT | Sehirleri listele |
+| `/api/tags` | GET/POST | JWT | Etiketleri listele / olustur |
+| `/api/connections` | GET | JWT | Arkadaslari listele |
+| `/api/connections/add` | POST | JWT | Arkadas ekle (kod ile) |
+| `/api/invites/create` | POST | JWT | Davet / arkadas kodu olustur |
+| `/api/stats` | GET | JWT | Istatistikler |
+| `/api/badges/me` | GET | JWT | Rozetlerim |
+| `/api/notifications` | GET | JWT | Bildirimler |
+| `/api/friends/dates` | GET | JWT | Arkadas date'leri (sayfalamali) |
+| `/api/forum/topics` | GET/POST | JWT | Forum konulari |
+| `/api/privacy` | GET/PUT | JWT | Gizlilik ayarlari |
+| `/api/admin/*` | Cesitli | Admin Key | Yonetim endpoint'leri |
+
+---
+
+## Detayli Rehberler
+
+- **[PRODUCTION_DEPLOY.md](PRODUCTION_DEPLOY.md)** — Sunucuya deploy, domain, SSL, yedekleme
+- **[MOBILE_TEST_GUIDE.md](MOBILE_TEST_GUIDE.md)** — Mobil uygulamayi telefonda test etme

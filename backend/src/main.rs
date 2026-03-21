@@ -21,7 +21,13 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::from_filename(".env.dev").ok();
+    // Production'da ortam degiskenleri dogrudan sistemden gelir (Docker, systemd, vs.)
+    // Development'ta .env.dev dosyasindan yuklenir
+    let app_env = std::env::var("APP_ENV").unwrap_or_else(|_| "dev".to_string());
+    match app_env.as_str() {
+        "production" => { /* ortam degiskenleri zaten tanimli */ }
+        _ => { dotenvy::from_filename(".env.dev").ok(); }
+    };
 
     tracing_subscriber::fmt()
         .with_env_filter(
