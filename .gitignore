@@ -149,4 +149,3 @@ dist
 backend/target/
 target/
 **/*.rs.bk
-Cargo.lock

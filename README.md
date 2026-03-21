@@ -98,7 +98,7 @@ docker compose up --build backend # Sadece backend'i yeniden derle
 | Yazilim | Versiyon | Neden |
 |---------|----------|-------|
 | Rust | stable (latest) | Backend'i derlemek |
-| Node.js | 18+ | Frontend, Admin, Mobile |
+| Node.js | 18+ | Frontend, Admin |
 | PostgreSQL | 16 | Veritabani |
 | Redis | 7+ | Oturum cache |
 
@@ -211,23 +211,12 @@ Acilan adres: **http://localhost:5174**
 
 Giris icin `.env.dev` dosyasindaki `ADMIN_API_KEY` degerini gir.
 
-#### 6. Mobil uygulama (yeni terminal, opsiyonel)
-
-```bash
-cd mobile
-npm install
-npx expo start
-```
-
-Sonra `i` (iOS simulator) veya telefondaki Expo Go uygulamasiyla QR kod tara.
-
 ### Terminaller Ozeti
 
 ```
 Terminal 1:  cd backend  && cargo run           → localhost:3000 (API)
 Terminal 2:  cd frontend && npm run dev         → localhost:5173 (Web)
 Terminal 3:  cd admin    && npm run dev         → localhost:5174 (Admin)
-Terminal 4:  cd mobile   && npx expo start      → Expo (Mobil)
 ```
 
 ---
@@ -298,13 +287,6 @@ haveismashedV2/
 │       ├── pages/            # Dashboard, Cities, Badges, Users...
 │       └── services/         # Admin API istemcisi
 │
-├── mobile/                   # React Native (Expo)
-│   └── src/
-│       ├── screens/          # 16 ekran
-│       ├── components/       # 31 bilesen
-│       ├── hooks/            # 8 custom hook
-│       └── services/api.ts   # API istemcisi
-│
 ├── docker-compose.yml        # Tek komutla tum servisleri baslat
 ├── .env.example              # Docker icin ortam degiskeni sablonu
 └── README.md
@@ -364,7 +346,3 @@ docker compose up --build
 
 ---
 
-## Detayli Rehberler
-
-- **[PRODUCTION_DEPLOY.md](PRODUCTION_DEPLOY.md)** — Sunucuya deploy, domain, SSL, yedekleme
-- **[MOBILE_TEST_GUIDE.md](MOBILE_TEST_GUIDE.md)** — Mobil uygulamayi telefonda test etme
