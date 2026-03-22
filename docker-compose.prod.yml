@@ -7,7 +7,8 @@
 services:
   # ── PostgreSQL: Portları kapat ─────────────────────────────────
   postgres:
-    ports: !override []
+    ports: !override
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: havesmashed
       POSTGRES_USER: havesmashed
