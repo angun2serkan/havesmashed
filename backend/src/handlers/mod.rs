@@ -13,12 +13,19 @@ pub mod privacy;
 pub mod stats;
 pub mod tags;
 
-use axum::Router;
+use axum::{Json, Router};
+use axum::routing::get;
+use serde_json::{json, Value};
 
 use crate::AppState;
 
+async fn health_check() -> Json<Value> {
+    Json(json!({ "status": "ok" }))
+}
+
 pub fn api_router() -> Router<AppState> {
     Router::new()
+        .route("/health", get(health_check))
         .nest("/auth", auth::router())
         .nest("/badges", badges::router())
         .nest("/dates", dates::router())

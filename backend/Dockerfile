@@ -1,5 +1,5 @@
 # ── Stage 1: Build ────────────────────────────────────────────
-FROM rust:latest AS builder
+FROM rust:1.85-slim AS builder
 
 WORKDIR /app
 
@@ -22,6 +22,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -35,6 +36,11 @@ COPY migrations ./migrations
 
 # Uploads dizini
 RUN mkdir -p uploads
+
+# Non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 3000
 

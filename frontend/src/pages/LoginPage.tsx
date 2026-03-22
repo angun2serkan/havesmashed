@@ -4,8 +4,6 @@ import { SeedPhraseInput } from "@/components/Auth/SeedPhraseInput";
 import { useAuthStore } from "@/stores/authStore";
 import { api } from "@/services/api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
-
 export function LoginPage() {
   const navigate = useNavigate();
   const { setAuth } = useAuthStore();
@@ -17,7 +15,7 @@ export function LoginPage() {
     setError("");
 
     try {
-      const res = await fetch(`${API_BASE}/api/auth/login`, {
+      const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ secret_phrase: secretPhrase }),

@@ -4,8 +4,6 @@ import { SeedPhraseDisplay } from "@/components/Auth/SeedPhraseDisplay";
 import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/authStore";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
-
 type Step = "create" | "display";
 
 export function RegisterPage() {
@@ -35,7 +33,7 @@ export function RegisterPage() {
       }
       const body = { invite_token: inviteToken };
 
-      const res = await fetch(`${API_BASE}/api/auth/register`, {
+      const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
