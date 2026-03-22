@@ -1,4 +1,8 @@
 # Environment variables
+.env
+.env.*
+!.env.example
+!.env.production.example
 .env.development.local
 .env.test.local
 .env.production.local
@@ -145,3 +149,7 @@ dist
 backend/target/
 target/
 **/*.rs.bk
+
+# Production
+backups/
+nginx/ssl/

@@ -5,6 +5,7 @@ mod middleware;
 mod services;
 
 use axum::Router;
+use http::HeaderValue;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
@@ -38,8 +39,13 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env();
 
+    let pool_size: u32 = std::env::var("DB_POOL_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+
     let db = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(pool_size)
         .connect(&config.database_url)
         .await?;
 
@@ -54,10 +60,24 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
     };
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = if app_env == "production" {
+        let origins: Vec<HeaderValue> = std::env::var("ALLOWED_ORIGINS")
+            .unwrap_or_default()
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        tracing::info!("CORS allowed origins: {:?}", origins);
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    } else {
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    };
 
     let app = Router::new()
         .nest("/api", handlers::api_router())

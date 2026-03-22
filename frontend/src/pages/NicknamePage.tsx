@@ -4,8 +4,6 @@ import { UserPen } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/authStore";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
-
 const NICKNAME_REGEX = /^[a-zA-Z0-9_.]{3,30}$/;
 
 export function NicknamePage() {
@@ -24,7 +22,7 @@ export function NicknamePage() {
     setError("");
 
     try {
-      const res = await fetch(`${API_BASE}/api/auth/nickname`, {
+      const res = await fetch("/api/auth/nickname", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
