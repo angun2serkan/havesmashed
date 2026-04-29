@@ -4,7 +4,7 @@ import { ShareWrapped } from "@/components/Stats/ShareWrapped";
 import { Card } from "@/components/ui/Card";
 import { useLogStore } from "@/stores/logStore";
 import { api } from "@/services/api";
-import { MapPin, Star, Calendar, Loader2, Smile, Dumbbell, MessageCircle, Filter, X, ChevronLeft, ChevronRight, Users } from "lucide-react";
+import { MapPin, Star, Calendar, Loader2, Smile, Dumbbell, MessageCircle, Filter, X, ChevronLeft, ChevronRight, Users, Trash2 } from "lucide-react";
 import { loadTags, getTagById } from "@/data/tags";
 import { getCountryName } from "@/utils/countryName";
 import type { FriendDate } from "@/types";
@@ -23,7 +23,9 @@ export function DashboardPage() {
   const dates = useLogStore((s) => s.dates);
   const setDates = useLogStore((s) => s.setDates);
   const setStats = useLogStore((s) => s.setStats);
+  const removeDate = useLogStore((s) => s.removeDate);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Filter state
   const [showFilters, setShowFilters] = useState(false);
@@ -133,6 +135,23 @@ export function DashboardPage() {
   // My Dates pagination calculations
   const myTotalPages = Math.max(1, Math.ceil(filteredDates.length / PAGE_SIZE));
   const myPageDates = filteredDates.slice((myPage - 1) * PAGE_SIZE, myPage * PAGE_SIZE);
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      if (!confirm("Bu date kaydını silmek istediğinden emin misin? Bu işlem geri alınamaz.")) return;
+      setDeletingId(id);
+      try {
+        await api.deleteDate(id);
+        removeDate(id);
+        api.getStats().then(setStats).catch(() => {});
+      } catch (err) {
+        alert(err instanceof Error ? err.message : "Silme başarısız");
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [removeDate, setStats],
+  );
 
   // Friend Dates pagination handlers
   const handleFriendNext = () => {
@@ -330,15 +349,29 @@ export function DashboardPage() {
                         <MapPin size={18} className="text-neon-500" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center justify-between mb-1 gap-2">
                           <p className="text-sm font-medium text-white">
                             {date.personNickname ? `${date.personNickname} — ` : ""}{date.cityName}, {getCountryName(date.countryCode)}
                           </p>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <Star size={14} className="text-neon-500" />
-                            <span className="text-sm font-bold text-neon-500">
-                              {date.rating}/10
-                            </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <div className="flex items-center gap-1">
+                              <Star size={14} className="text-neon-500" />
+                              <span className="text-sm font-bold text-neon-500">
+                                {date.rating}/10
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => handleDelete(date.id)}
+                              disabled={deletingId === date.id}
+                              title="Sil"
+                              className="p-1.5 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors disabled:opacity-50 cursor-pointer"
+                            >
+                              {deletingId === date.id ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <Trash2 size={12} />
+                              )}
+                            </button>
                           </div>
                         </div>
 
