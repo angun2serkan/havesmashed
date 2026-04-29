@@ -43,6 +43,13 @@ pub struct UpdateCityRequest {
 }
 
 #[derive(Deserialize)]
+pub struct BulkCreateCitiesRequest {
+    pub cities: Vec<CreateCityRequest>,
+}
+
+const BULK_CITIES_MAX: usize = 1000;
+
+#[derive(Deserialize)]
 pub struct CreateBadgeRequest {
     pub name: String,
     pub description: String,
@@ -102,6 +109,7 @@ pub fn router() -> Router<AppState> {
         // Cities
         .route("/cities", get(list_cities))
         .route("/cities", post(create_city))
+        .route("/cities/bulk", post(bulk_create_cities))
         .route("/cities/{id}", put(update_city))
         .route("/cities/{id}", delete(delete_city))
         // Badges
@@ -255,6 +263,116 @@ async fn create_city(
             "latitude": body.latitude,
             "longitude": body.longitude,
             "population": body.population,
+        },
+        "error": null
+    })))
+}
+
+/// POST /api/admin/cities/bulk
+/// Body: { "cities": [ { name, country_code, latitude, longitude, population? }, ... ] }
+/// Returns: { added, skipped, errors: [{ row, name, reason }] }
+/// - Duplicates (same name+country_code) are silently skipped (counted as `skipped`)
+/// - Invalid rows are reported in `errors` and not inserted
+/// - Valid rows are inserted in a single transaction
+async fn bulk_create_cities(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<BulkCreateCitiesRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config)?;
+
+    if body.cities.is_empty() {
+        return Err(AppError::BadRequest("cities array is empty".into()));
+    }
+    if body.cities.len() > BULK_CITIES_MAX {
+        return Err(AppError::BadRequest(format!(
+            "too many cities (max {})",
+            BULK_CITIES_MAX
+        )));
+    }
+
+    let mut errors: Vec<serde_json::Value> = Vec::new();
+    let mut valid: Vec<CreateCityRequest> = Vec::new();
+
+    for (i, city) in body.cities.into_iter().enumerate() {
+        let name = city.name.trim().to_string();
+        let cc = city.country_code.trim().to_uppercase();
+
+        let push_err = |errors: &mut Vec<serde_json::Value>, reason: String| {
+            errors.push(json!({
+                "row": i,
+                "name": if name.is_empty() { serde_json::Value::Null } else { json!(name) },
+                "reason": reason,
+            }));
+        };
+
+        if name.is_empty() {
+            push_err(&mut errors, "name is empty".into());
+            continue;
+        }
+        if cc.len() != 2 || !cc.chars().all(|c| c.is_ascii_alphabetic()) {
+            push_err(&mut errors, format!("invalid country_code: {:?}", city.country_code));
+            continue;
+        }
+        if !(-90.0..=90.0).contains(&city.latitude) {
+            push_err(&mut errors, format!("invalid latitude: {}", city.latitude));
+            continue;
+        }
+        if !(-180.0..=180.0).contains(&city.longitude) {
+            push_err(&mut errors, format!("invalid longitude: {}", city.longitude));
+            continue;
+        }
+        if let Some(p) = city.population {
+            if p < 0 {
+                push_err(&mut errors, format!("invalid population: {}", p));
+                continue;
+            }
+        }
+
+        valid.push(CreateCityRequest {
+            name,
+            country_code: cc,
+            latitude: city.latitude,
+            longitude: city.longitude,
+            population: city.population,
+        });
+    }
+
+    let mut added = 0u32;
+    let mut skipped = 0u32;
+
+    if !valid.is_empty() {
+        let mut tx = state.db.begin().await?;
+        for c in &valid {
+            let inserted: Option<i32> = sqlx::query_scalar(
+                "INSERT INTO cities (name, country_code, longitude, latitude, population) \
+                 VALUES ($1, $2, $3, $4, $5) \
+                 ON CONFLICT (name, country_code) DO NOTHING \
+                 RETURNING id",
+            )
+            .bind(&c.name)
+            .bind(&c.country_code)
+            .bind(c.longitude)
+            .bind(c.latitude)
+            .bind(c.population)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            if inserted.is_some() {
+                added += 1;
+            } else {
+                skipped += 1;
+            }
+        }
+        tx.commit().await?;
+    }
+
+    Ok(Json(json!({
+        "success": true,
+        "data": {
+            "added": added,
+            "skipped": skipped,
+            "errors": errors,
         },
         "error": null
     })))

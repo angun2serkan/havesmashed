@@ -27,6 +27,12 @@ export const adminApi = {
   },
   createCity: (data: { name: string; country_code: string; latitude: number; longitude: number; population?: number }) =>
     request<{ id: number }>('/admin/cities', { method: 'POST', body: JSON.stringify(data) }),
+  bulkCreateCities: (cities: Array<{ name: string; country_code: string; latitude: number; longitude: number; population?: number }>) =>
+    request<{
+      added: number
+      skipped: number
+      errors: Array<{ row: number; name: string | null; reason: string }>
+    }>('/admin/cities/bulk', { method: 'POST', body: JSON.stringify({ cities }) }),
   updateCity: (id: number, data: Record<string, unknown>) =>
     request<{ id: number }>(`/admin/cities/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteCity: (id: number) =>
