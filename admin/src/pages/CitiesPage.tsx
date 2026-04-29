@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useMemo, useCallback, type FormEvent } from 'react'
-import { Plus, Pencil, Trash2, X, Check, MapPin, Filter, ArrowLeft } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, Check, MapPin, Filter, ArrowLeft, Upload } from 'lucide-react'
 import { adminApi } from '@/services/api'
 import { MapContainer, TileLayer, GeoJSON, Marker, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
@@ -231,6 +231,165 @@ function CoordPicker({
   )
 }
 
+type BulkResult = {
+  added: number
+  skipped: number
+  errors: Array<{ row: number; name: string | null; reason: string }>
+}
+
+const BULK_PLACEHOLDER = `[
+  {
+    "name": "Antalya",
+    "country_code": "TR",
+    "latitude": 36.8969,
+    "longitude": 30.7133,
+    "population": 2548308
+  }
+]`
+
+function BulkImportModal({
+  onClose,
+  onComplete,
+}: {
+  onClose: () => void
+  onComplete: () => void
+}) {
+  const [text, setText] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [parseError, setParseError] = useState('')
+  const [result, setResult] = useState<BulkResult | null>(null)
+
+  async function handleSubmit() {
+    setParseError('')
+    setResult(null)
+
+    let cities: Array<{
+      name: string
+      country_code: string
+      latitude: number
+      longitude: number
+      population?: number
+    }>
+
+    try {
+      const parsed = JSON.parse(text)
+      if (!Array.isArray(parsed)) {
+        throw new Error('JSON must be an array')
+      }
+      if (parsed.length === 0) {
+        throw new Error('Array is empty')
+      }
+      cities = parsed
+    } catch (err) {
+      setParseError(err instanceof Error ? err.message : 'Invalid JSON')
+      return
+    }
+
+    setLoading(true)
+    try {
+      const res = await adminApi.bulkCreateCities(cities)
+      setResult(res)
+      if (res.added > 0) onComplete()
+    } catch (err) {
+      setParseError(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="bg-dark-800 border border-dark-700 rounded-xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-dark-700">
+          <h3 className="text-lg font-semibold text-white">Bulk Import Cities</h3>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded bg-dark-700 text-dark-400 hover:bg-dark-600 transition-colors"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto flex-1">
+          <p className="text-sm text-dark-400 mb-2">
+            Paste a JSON array. Required fields: <code className="text-neon-400">name</code>,{' '}
+            <code className="text-neon-400">country_code</code> (2 letters),{' '}
+            <code className="text-neon-400">latitude</code>,{' '}
+            <code className="text-neon-400">longitude</code>. Optional:{' '}
+            <code className="text-neon-400">population</code>. Duplicates (same name + country) are
+            skipped.
+          </p>
+
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={BULK_PLACEHOLDER}
+            spellCheck={false}
+            className="w-full h-72 px-3 py-2 bg-dark-900 border border-dark-600 rounded-lg text-white placeholder-dark-500 font-mono text-sm focus:outline-none focus:border-neon-500 transition-colors resize-none"
+          />
+
+          {parseError && (
+            <div className="mt-3 text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-sm">
+              {parseError}
+            </div>
+          )}
+
+          {result && (
+            <div className="mt-3 space-y-2">
+              <div className="flex gap-3 text-sm">
+                <span className="px-3 py-1.5 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20">
+                  Added: {result.added}
+                </span>
+                <span className="px-3 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">
+                  Skipped (duplicates): {result.skipped}
+                </span>
+                <span
+                  className={`px-3 py-1.5 rounded-lg border ${
+                    result.errors.length > 0
+                      ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                      : 'bg-dark-700 text-dark-400 border-dark-600'
+                  }`}
+                >
+                  Errors: {result.errors.length}
+                </span>
+              </div>
+              {result.errors.length > 0 && (
+                <div className="max-h-48 overflow-y-auto bg-dark-900 border border-dark-700 rounded-lg p-3">
+                  <ul className="space-y-1 text-xs font-mono">
+                    {result.errors.map((e, i) => (
+                      <li key={i} className="text-red-300">
+                        Row {e.row}
+                        {e.name ? ` (${e.name})` : ''}: {e.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-dark-700">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 bg-dark-700 text-dark-300 rounded-lg font-medium hover:bg-dark-600 transition-colors"
+          >
+            Close
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={loading || !text.trim()}
+            className="flex items-center gap-2 px-4 py-2 bg-neon-500/20 text-neon-400 border border-neon-500/30 rounded-lg font-medium hover:bg-neon-500/30 transition-colors disabled:opacity-50"
+          >
+            <Upload size={16} />
+            {loading ? 'Importing...' : 'Import'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function CitiesPage() {
   const [cities, setCities] = useState<CityRow[]>([])
   const [form, setForm] = useState(emptyForm)
@@ -239,6 +398,7 @@ export default function CitiesPage() {
   const [editId, setEditId] = useState<number | null>(null)
   const [editForm, setEditForm] = useState(emptyForm)
   const [showCoordPicker, setShowCoordPicker] = useState(false)
+  const [showBulkImport, setShowBulkImport] = useState(false)
   const [countryFilter, setCountryFilter] = useState('')
 
   function fetchCities() {
@@ -332,9 +492,19 @@ export default function CitiesPage() {
 
       {/* Add City Form */}
       <div className="bg-dark-800 border border-dark-700 rounded-xl p-5 mb-6">
-        <h3 className="text-sm font-semibold text-dark-300 uppercase tracking-wider mb-4">
-          Add City
-        </h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-dark-300 uppercase tracking-wider">
+            Add City
+          </h3>
+          <button
+            type="button"
+            onClick={() => setShowBulkImport(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-lg text-sm font-medium hover:bg-blue-500/30 transition-colors"
+          >
+            <Upload size={14} />
+            Bulk Import
+          </button>
+        </div>
         <form onSubmit={handleCreate} className="space-y-3">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <input
@@ -553,6 +723,14 @@ export default function CitiesPage() {
           onSelect={handleCoordSelect}
           onClose={() => setShowCoordPicker(false)}
           onCountryCodeDetected={(code) => setForm((f) => ({ ...f, country_code: code }))}
+        />
+      )}
+
+      {/* Bulk Import Modal */}
+      {showBulkImport && (
+        <BulkImportModal
+          onClose={() => setShowBulkImport(false)}
+          onComplete={fetchCities}
         />
       )}
     </div>
