@@ -12,6 +12,7 @@ import { InvitePage } from "@/pages/InvitePage";
 import { NotificationsPage } from "@/pages/NotificationsPage";
 import { ForumPage } from "@/pages/ForumPage";
 import { TopicDetailPage } from "@/pages/TopicDetailPage";
+import { RelationshipsPage } from "@/pages/RelationshipsPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -102,6 +103,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <FriendsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/relationships"
+          element={
+            <ProtectedRoute>
+              <RelationshipsPage />
             </ProtectedRoute>
           }
         />

@@ -9,6 +9,7 @@ pub mod feed;
 pub mod forum;
 pub mod friends;
 pub mod notifications;
+pub mod partners;
 pub mod privacy;
 pub mod stats;
 pub mod tags;
@@ -40,5 +41,6 @@ pub fn api_router() -> Router<AppState> {
         .nest("/privacy", privacy::router())
         .nest("/forum", forum::router())
         .nest("/notifications", notifications::router())
+        .nest("/partners", partners::router())
         .nest("/admin", admin::router())
 }

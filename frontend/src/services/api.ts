@@ -12,6 +12,8 @@ import type {
   FriendStats,
   InviteResponse,
   Notification,
+  Partner,
+  PartnerInput,
   Stats,
 } from "@/types";
 
@@ -565,4 +567,75 @@ export const api = {
       share_dates: boolean;
       share_stats: boolean;
     }>("/privacy", { method: "PUT", body: JSON.stringify(data) }),
+
+  // Profile
+  getMe: async (): Promise<{
+    userId: string;
+    nickname: string | null;
+    birthday: string | null;
+    createdAt: string;
+  }> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = await request<any>("/auth/me");
+    return {
+      userId: raw.user_id,
+      nickname: raw.nickname ?? null,
+      birthday: raw.birthday ?? null,
+      createdAt: raw.created_at,
+    };
+  },
+
+  setBirthday: (birthday: string | null) =>
+    request<{ birthday: string | null }>("/auth/birthday", {
+      method: "PUT",
+      body: JSON.stringify({ birthday }),
+    }),
+
+  // Partners
+  getPartners: async (): Promise<Partner[]> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = await request<any[]>("/partners");
+    return raw.map(mapPartner);
+  },
+
+  createPartner: async (data: PartnerInput): Promise<Partner> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = await request<any>("/partners", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return mapPartner(raw);
+  },
+
+  updatePartner: async (id: string, data: Partial<PartnerInput>): Promise<Partner> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = await request<any>(`/partners/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+    return mapPartner(raw);
+  },
+
+  deletePartner: (id: string) =>
+    request<{ id: string; message: string }>(`/partners/${id}`, {
+      method: "DELETE",
+    }),
 };
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function mapPartner(p: any): Partner {
+  return {
+    id: p.id,
+    name: p.name,
+    birthday: p.birthday,
+    relationshipStart: p.relationship_start,
+    relationshipEnd: p.relationship_end ?? null,
+    satisfactionScore: p.satisfaction_score ?? null,
+    endReason: p.end_reason ?? null,
+    howWeMet: p.how_we_met ?? null,
+    notes: p.notes ?? null,
+    createdAt: p.created_at,
+    updatedAt: p.updated_at ?? null,
+  };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Shield, Trash2, User, Pencil, Check, X, Award, Loader2, Camera } from "lucide-react";
+import { Shield, Trash2, User, Pencil, Check, X, Award, Loader2, Camera, Cake } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { BadgeGrid } from "@/components/Badges/BadgeGrid";
@@ -18,12 +18,16 @@ interface PrivacySettings {
 export function SettingsPage() {
   const user = useAuthStore((s) => s.user);
   const setNickname = useAuthStore((s) => s.setNickname);
+  const setBirthdayInStore = useAuthStore((s) => s.setBirthday);
   const logout = useAuthStore((s) => s.logout);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [editingNickname, setEditingNickname] = useState(false);
   const [nicknameInput, setNicknameInput] = useState(user?.nickname ?? "");
   const [nicknameSaving, setNicknameSaving] = useState(false);
   const [nicknameError, setNicknameError] = useState<string | null>(null);
+  const [birthdayInput, setBirthdayInput] = useState<string>(user?.birthday ?? "");
+  const [birthdaySaving, setBirthdaySaving] = useState(false);
+  const [birthdayError, setBirthdayError] = useState<string | null>(null);
   const [badges, setBadges] = useState<Badge[]>([]);
   const [badgesLoading, setBadgesLoading] = useState(true);
   const [privacy, setPrivacy] = useState<PrivacySettings>({
@@ -47,7 +51,16 @@ export function SettingsPage() {
       .then(setPrivacy)
       .catch(() => {})
       .finally(() => setPrivacyLoading(false));
-  }, []);
+
+    // Hydrate birthday from server (auth store may not have it from older logins)
+    api
+      .getMe()
+      .then((me) => {
+        setBirthdayInStore(me.birthday);
+        setBirthdayInput(me.birthday ?? "");
+      })
+      .catch(() => {});
+  }, [setBirthdayInStore]);
 
   const handlePrivacyToggle = useCallback(
     async (key: keyof PrivacySettings, snakeKey: string, value: boolean) => {
@@ -64,6 +77,20 @@ export function SettingsPage() {
     },
     [privacy],
   );
+
+  const handleSaveBirthday = async () => {
+    setBirthdaySaving(true);
+    setBirthdayError(null);
+    try {
+      const value = birthdayInput || null;
+      await api.setBirthday(value);
+      setBirthdayInStore(value);
+    } catch (err) {
+      setBirthdayError(err instanceof Error ? err.message : "Kaydedilemedi");
+    } finally {
+      setBirthdaySaving(false);
+    }
+  };
 
   const handleSaveNickname = async () => {
     const trimmed = nicknameInput.trim();
@@ -154,6 +181,35 @@ export function SettingsPage() {
             </div>
             {nicknameError && (
               <p className="text-xs text-red-400">{nicknameError}</p>
+            )}
+            <div className="flex items-center justify-between">
+              <span className="text-dark-400 flex items-center gap-1.5">
+                <Cake size={12} />
+                Doğum günü
+              </span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={birthdayInput}
+                  onChange={(e) => setBirthdayInput(e.target.value)}
+                  className="bg-dark-900 border border-dark-600 rounded-lg px-2 py-1 text-sm text-white focus:border-neon-500 focus:outline-none [color-scheme:dark]"
+                />
+                <button
+                  onClick={handleSaveBirthday}
+                  disabled={birthdaySaving || birthdayInput === (user?.birthday ?? "")}
+                  className="text-accent-green hover:text-green-300 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Kaydet"
+                >
+                  {birthdaySaving ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Check size={16} />
+                  )}
+                </button>
+              </div>
+            </div>
+            {birthdayError && (
+              <p className="text-xs text-red-400">{birthdayError}</p>
             )}
             <div className="flex justify-between">
               <span className="text-dark-400">Member Since</span>

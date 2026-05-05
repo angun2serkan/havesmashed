@@ -1,10 +1,53 @@
 export interface User {
   id: string;
   nickname: string | null;
+  birthday?: string | null;
   createdAt: string;
   lastSeenAt?: string;
   inviteCount: number;
   isActive: boolean;
+}
+
+export type EndReason =
+  | "distance"
+  | "lost_interest"
+  | "cheating"
+  | "mutual"
+  | "incompatibility"
+  | "other";
+
+export type HowWeMet =
+  | "app"
+  | "friends"
+  | "work"
+  | "school"
+  | "family"
+  | "random"
+  | "other";
+
+export interface Partner {
+  id: string;
+  name: string;
+  birthday: string; // ISO date YYYY-MM-DD
+  relationshipStart: string;
+  relationshipEnd: string | null;
+  satisfactionScore: number | null;
+  endReason: EndReason | null;
+  howWeMet: HowWeMet | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+export interface PartnerInput {
+  name: string;
+  birthday: string;
+  relationship_start: string;
+  relationship_end?: string | null;
+  satisfaction_score?: number | null;
+  end_reason?: EndReason | null;
+  how_we_met?: HowWeMet | null;
+  notes?: string | null;
 }
 
 export interface DateEntry {
