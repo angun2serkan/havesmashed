@@ -8,6 +8,7 @@ interface AuthState {
   isAuthenticated: boolean;
   setAuth: (user: User, token: string) => void;
   setNickname: (nickname: string, newToken: string) => void;
+  setBirthday: (birthday: string | null) => void;
   logout: () => void;
 }
 
@@ -22,6 +23,10 @@ export const useAuthStore = create<AuthState>()(
         set((state) => ({
           user: state.user ? { ...state.user, nickname } : null,
           token: newToken,
+        })),
+      setBirthday: (birthday) =>
+        set((state) => ({
+          user: state.user ? { ...state.user, birthday } : null,
         })),
       logout: () =>
         set({

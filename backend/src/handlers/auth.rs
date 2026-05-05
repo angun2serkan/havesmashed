@@ -1,6 +1,7 @@
 use axum::extract::State;
-use axum::routing::{post, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -59,6 +60,20 @@ pub struct DeleteAccountResponse {
     pub deletion_date: String,
 }
 
+#[derive(Deserialize)]
+pub struct SetBirthdayRequest {
+    /// Pass `null` to clear the stored birthday.
+    pub birthday: Option<NaiveDate>,
+}
+
+#[derive(Serialize)]
+pub struct MeResponse {
+    pub user_id: Uuid,
+    pub nickname: Option<String>,
+    pub birthday: Option<NaiveDate>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
 // ── Router ──────────────────────────────────────────────────────
 
 pub fn router() -> Router<AppState> {
@@ -66,6 +81,8 @@ pub fn router() -> Router<AppState> {
         .route("/register", post(register))
         .route("/login", post(login))
         .route("/nickname", put(set_nickname))
+        .route("/me", get(get_me))
+        .route("/birthday", put(set_birthday))
         .route("/delete-account", post(delete_account))
 }
 
@@ -230,6 +247,68 @@ async fn set_nickname(
     Ok(Json(serde_json::json!({
         "success": true,
         "data": resp,
+        "error": null
+    })))
+}
+
+/// GET /api/auth/me
+/// Return the authenticated user's profile (nickname, birthday, created_at).
+async fn get_me(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let row = sqlx::query_as::<_, (Option<String>, Option<NaiveDate>, chrono::DateTime<chrono::Utc>)>(
+        "SELECT nickname, birthday, created_at FROM users WHERE id = $1 AND is_active = TRUE",
+    )
+    .bind(auth.user_id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    let resp = MeResponse {
+        user_id: auth.user_id,
+        nickname: row.0,
+        birthday: row.1,
+        created_at: row.2,
+    };
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "data": resp,
+        "error": null
+    })))
+}
+
+/// PUT /api/auth/birthday
+/// Set or clear the user's birthday.
+async fn set_birthday(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<SetBirthdayRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if let Some(b) = body.birthday {
+        let today = chrono::Utc::now().date_naive();
+        if b > today {
+            return Err(AppError::BadRequest(
+                "birthday cannot be in the future".to_string(),
+            ));
+        }
+        if b.year() < 1900 {
+            return Err(AppError::BadRequest(
+                "birthday year must be 1900 or later".to_string(),
+            ));
+        }
+    }
+
+    sqlx::query("UPDATE users SET birthday = $1 WHERE id = $2")
+        .bind(body.birthday)
+        .bind(auth.user_id)
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "data": { "birthday": body.birthday },
         "error": null
     })))
 }

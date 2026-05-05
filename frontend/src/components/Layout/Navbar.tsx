@@ -4,6 +4,7 @@ import {
   Globe,
   CalendarHeart,
   Users,
+  Heart,
   MessageSquare,
   Settings,
   LogOut,
@@ -15,6 +16,7 @@ import { api } from "@/services/api";
 const navItems = [
   { path: "/", icon: Globe, label: "Globe" },
   { path: "/dates", icon: CalendarHeart, label: "Dates" },
+  { path: "/relationships", icon: Heart, label: "Relations" },
   { path: "/friends", icon: Users, label: "Friends" },
   { path: "/forum", icon: MessageSquare, label: "Forum" },
   { path: "/settings", icon: Settings, label: "Settings" },
