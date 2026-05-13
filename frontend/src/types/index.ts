@@ -169,7 +169,11 @@ export interface Badge {
   earned: boolean;
   earnedAt: string | null;
   gender: "male" | "female" | "lgbt" | "both";
-  tier: "bronze" | "silver" | "gold";
+  tier: "bronze" | "silver" | "gold" | "premium";
+  isSponsored?: boolean;
+  sponsorName?: string | null;
+  sponsorClickUrl?: string | null;
+  sponsorLogoUrl?: string | null;
 }
 
 export interface Notification {

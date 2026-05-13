@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { StatsCards } from "@/components/Stats/StatsCards";
 import { ShareWrapped } from "@/components/Stats/ShareWrapped";
+import { AdSlot } from "@/components/Ads/AdSlot";
 import { Card } from "@/components/ui/Card";
 import { useLogStore } from "@/stores/logStore";
 import { api } from "@/services/api";
@@ -179,6 +180,10 @@ export function DashboardPage() {
 
       <div className="mt-4">
         <ShareWrapped />
+      </div>
+
+      <div className="mt-4">
+        <AdSlot placementKey="feed_native" />
       </div>
 
       {/* Filters - apply to My Dates only */}

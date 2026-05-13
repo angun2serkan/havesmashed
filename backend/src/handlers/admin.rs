@@ -7,6 +7,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::handlers::admin_brands::write_audit;
+use crate::middleware::admin_context::AdminContext;
 use crate::AppState;
 
 // ── Admin auth helper ──────────────────────────────────────────
@@ -77,6 +79,13 @@ pub struct ListBadgesQuery {
 }
 
 #[derive(Deserialize)]
+pub struct SetBadgeSponsorRequest {
+    pub sponsor_name: String,
+    pub sponsor_click_url: String,
+    pub sponsor_logo_url: String,
+}
+
+#[derive(Deserialize)]
 pub struct ListCitiesQuery {
     pub country_code: Option<String>,
 }
@@ -115,7 +124,9 @@ pub fn router() -> Router<AppState> {
         // Badges
         .route("/badges/upload", post(upload_badge_image))
         .route("/badges", get(list_badges).post(create_badge))
+        .route("/badges/sponsored/stats", get(list_sponsored_badge_stats))
         .route("/badges/{id}", put(update_badge).delete(delete_badge))
+        .route("/badges/{id}/sponsor", put(set_badge_sponsor).delete(clear_badge_sponsor))
         // Notifications
         .route("/notifications", post(send_notification))
         .route("/notifications", get(list_notifications))
@@ -136,6 +147,9 @@ pub fn router() -> Router<AppState> {
         .route("/forum/users/{id}/ban", post(ban_user))
         .route("/forum/users/{id}/unban", post(unban_user))
         .route("/forum/bans", get(list_active_bans))
+        // Analytics
+        .route("/analytics/recompute", post(recompute_analytics))
+        .route("/analytics/drain-events", post(drain_events))
 }
 
 // ── Dashboard ──────────────────────────────────────────────────
@@ -481,14 +495,14 @@ async fn list_badges(
     use sqlx::Row;
     let rows = if let Some(ref gender) = params.gender {
         sqlx::query(
-            "SELECT id, name, description, icon, category, threshold, image_url, gender FROM badges WHERE gender = $1 OR gender = 'both' ORDER BY id",
+            "SELECT id, name, description, icon, category, threshold, image_url, gender, is_sponsored, sponsor_name, sponsor_click_url, sponsor_logo_url, sponsor_click_count FROM badges WHERE gender = $1 OR gender = 'both' ORDER BY id",
         )
         .bind(gender)
         .fetch_all(&state.db)
         .await?
     } else {
         sqlx::query(
-            "SELECT id, name, description, icon, category, threshold, image_url, gender FROM badges ORDER BY id",
+            "SELECT id, name, description, icon, category, threshold, image_url, gender, is_sponsored, sponsor_name, sponsor_click_url, sponsor_logo_url, sponsor_click_count FROM badges ORDER BY id",
         )
         .fetch_all(&state.db)
         .await?
@@ -506,6 +520,11 @@ async fn list_badges(
                 "threshold": r.get::<i32, _>("threshold"),
                 "image_url": r.get::<Option<String>, _>("image_url"),
                 "gender": r.get::<Option<String>, _>("gender"),
+                "is_sponsored": r.get::<bool, _>("is_sponsored"),
+                "sponsor_name": r.get::<Option<String>, _>("sponsor_name"),
+                "sponsor_click_url": r.get::<Option<String>, _>("sponsor_click_url"),
+                "sponsor_logo_url": r.get::<Option<String>, _>("sponsor_logo_url"),
+                "sponsor_click_count": r.get::<i64, _>("sponsor_click_count"),
             })
         })
         .collect();
@@ -683,6 +702,203 @@ async fn upload_badge_image(
     }
 
     Err(AppError::BadRequest("No file provided".to_string()))
+}
+
+/// PUT /api/admin/badges/:id/sponsor
+/// Attach sponsor branding to an existing badge. All three sponsor
+/// fields are required when activating; any of them being null
+/// rejects the request (UI also validates).
+async fn set_badge_sponsor(
+    State(state): State<AppState>,
+    ctx: AdminContext,
+    Path(id): Path<i32>,
+    Json(body): Json<SetBadgeSponsorRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    ctx.require_super()?;
+    ctx.require_password_changed()?;
+
+    if body.sponsor_name.trim().is_empty() {
+        return Err(AppError::BadRequest("sponsor_name required".to_string()));
+    }
+    if body.sponsor_click_url.trim().is_empty() {
+        return Err(AppError::BadRequest("sponsor_click_url required".to_string()));
+    }
+    if body.sponsor_logo_url.trim().is_empty() {
+        return Err(AppError::BadRequest("sponsor_logo_url required".to_string()));
+    }
+
+    let before = fetch_badge_sponsor_state(&state.db, id).await?;
+
+    let result = sqlx::query(
+        r#"
+        UPDATE badges SET
+            is_sponsored = TRUE,
+            sponsor_name = $2,
+            sponsor_click_url = $3,
+            sponsor_logo_url = $4
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .bind(&body.sponsor_name)
+    .bind(&body.sponsor_click_url)
+    .bind(&body.sponsor_logo_url)
+    .execute(&state.db)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Badge not found".to_string()));
+    }
+
+    let after = fetch_badge_sponsor_state(&state.db, id).await?;
+    let brand_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT brand_id FROM badges WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+            .flatten();
+    write_audit(
+        &state.db,
+        &ctx,
+        "badge_sponsor_set",
+        Some("badge"),
+        None,
+        brand_id,
+        Some(json!({ "badge_id": id, "before": before, "after": after })),
+    )
+    .await;
+
+    Ok(Json(json!({ "success": true, "data": after, "error": null })))
+}
+
+/// DELETE /api/admin/badges/:id/sponsor
+/// Clear all sponsor fields and disable the sponsorship flag.
+async fn clear_badge_sponsor(
+    State(state): State<AppState>,
+    ctx: AdminContext,
+    Path(id): Path<i32>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    ctx.require_super()?;
+    ctx.require_password_changed()?;
+
+    let before = fetch_badge_sponsor_state(&state.db, id).await?;
+
+    let prior_brand_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT brand_id FROM badges WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+            .flatten();
+
+    let result = sqlx::query(
+        r#"
+        UPDATE badges SET
+            is_sponsored = FALSE,
+            sponsor_name = NULL,
+            sponsor_click_url = NULL,
+            sponsor_logo_url = NULL,
+            brand_id = NULL
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Badge not found".to_string()));
+    }
+
+    write_audit(
+        &state.db,
+        &ctx,
+        "badge_sponsor_clear",
+        Some("badge"),
+        None,
+        prior_brand_id,
+        Some(json!({ "badge_id": id, "before": before })),
+    )
+    .await;
+
+    Ok(Json(json!({
+        "success": true,
+        "data": { "badge_id": id, "is_sponsored": false },
+        "error": null
+    })))
+}
+
+async fn fetch_badge_sponsor_state(
+    db: &sqlx::PgPool,
+    id: i32,
+) -> Result<serde_json::Value, AppError> {
+    use sqlx::Row;
+    let row = sqlx::query(
+        r#"
+        SELECT id, name, is_sponsored, sponsor_name, sponsor_click_url, sponsor_logo_url
+        FROM badges WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Badge not found".to_string()))?;
+
+    Ok(json!({
+        "id": row.get::<i32, _>("id"),
+        "name": row.get::<String, _>("name"),
+        "is_sponsored": row.get::<bool, _>("is_sponsored"),
+        "sponsor_name": row.get::<Option<String>, _>("sponsor_name"),
+        "sponsor_click_url": row.get::<Option<String>, _>("sponsor_click_url"),
+        "sponsor_logo_url": row.get::<Option<String>, _>("sponsor_logo_url"),
+    }))
+}
+
+/// GET /api/admin/badges/sponsored/stats
+/// Per-sponsored-badge metrics: total unlock count + total sponsor clicks.
+/// Brand-tarafı kampanya değil, her sponsored badge için sade sayı —
+/// k-anonimlik koruması yok (zaten kullanıcı kimliği eklenmiyor).
+async fn list_sponsored_badge_stats(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config)?;
+
+    use sqlx::Row;
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            b.id,
+            b.name,
+            b.sponsor_name,
+            b.sponsor_click_count,
+            COALESCE(unlocks.cnt, 0) AS total_unlocks
+        FROM badges b
+        LEFT JOIN (
+            SELECT badge_id, COUNT(*)::BIGINT AS cnt
+            FROM user_badges
+            GROUP BY badge_id
+        ) unlocks ON unlocks.badge_id = b.id
+        WHERE b.is_sponsored = TRUE
+        ORDER BY b.id
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let stats: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "badge_id": r.get::<i32, _>("id"),
+                "name": r.get::<String, _>("name"),
+                "sponsor_name": r.get::<Option<String>, _>("sponsor_name"),
+                "total_unlocks": r.get::<i64, _>("total_unlocks"),
+                "sponsor_click_count": r.get::<i64, _>("sponsor_click_count"),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({ "success": true, "data": stats, "error": null })))
 }
 
 /// DELETE /api/admin/badges/:id
@@ -1318,4 +1534,56 @@ async fn list_active_bans(
         .collect();
 
     Ok(Json(json!({ "success": true, "data": bans, "error": null })))
+}
+
+// ── Analytics ──────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RecomputeQuery {
+    /// Date to recompute, format YYYY-MM-DD. Defaults to yesterday.
+    pub date: Option<chrono::NaiveDate>,
+}
+
+/// POST /api/admin/analytics/recompute?date=YYYY-MM-DD
+/// Force a daily aggregate recomputation. Idempotent.
+async fn recompute_analytics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<RecomputeQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config)?;
+
+    let date = q
+        .date
+        .unwrap_or_else(|| chrono::Utc::now().date_naive() - chrono::Duration::days(1));
+
+    crate::services::analytics_aggregator::run_daily(&state.db, date)
+        .await
+        .map_err(AppError::Sqlx)?;
+
+    Ok(Json(json!({
+        "success": true,
+        "data": { "date": date },
+        "error": null
+    })))
+}
+
+/// POST /api/admin/analytics/drain-events
+/// Force an immediate Redis→Postgres drain of buffered event counters.
+async fn drain_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    verify_admin(&headers, &state.config)?;
+
+    let mut redis = state.redis.clone();
+    let written = crate::services::event_tracker::drain(&mut redis, &state.db)
+        .await
+        .map_err(|e| AppError::Internal(format!("event_tracker drain: {e}")))?;
+
+    Ok(Json(json!({
+        "success": true,
+        "data": { "fields_written": written },
+        "error": null
+    })))
 }

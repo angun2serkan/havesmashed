@@ -50,6 +50,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change_me_to_a_random_secret_at_least_32_chars}
       JWT_EXPIRY: ${JWT_EXPIRY:-604800}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-change_me_to_a_random_admin_key}
+      ADMIN_API_NAME: ${ADMIN_API_NAME:-Super Admin}
       HOST: 0.0.0.0
       PORT: "3000"
       RUST_LOG: havesmashed_backend=info,tower_http=info

@@ -23,6 +23,8 @@ rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
+argon2 = "0.5"
+password-hash = "0.5"
 
 # Serialization & Validation
 serde = { version = "1", features = ["derive"] }
@@ -37,6 +39,18 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 anyhow = "1"
+
+[lib]
+name = "havesmashed_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "havesmashed-backend"
+path = "src/main.rs"
+
+[[bin]]
+name = "create_admin"
+path = "src/bin/create_admin.rs"
 
 [profile.release]
 opt-level = 3

@@ -1,14 +1,19 @@
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::NaiveDate;
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
+use crate::services::ad_token;
 use crate::AppState;
+
+const GATE_PLACEMENT_KEY: &str = "gated_interstitial";
 
 const MAX_DATES_PER_USER: i64 = 1000;
 const VALID_GENDERS: &[&str] = &["male", "female", "other"];
@@ -255,12 +260,97 @@ async fn update_streak(db: &sqlx::PgPool, user_id: Uuid) -> Result<(), AppError>
     Ok(())
 }
 
+// ── Ad gate enforcement ─────────────────────────────────────────
+//
+// Mirrors the gate decision logic from /api/ads/gate/next so the
+// frontend's "should I open the gate modal?" probe and the
+// authoritative server-side check agree. Returns Ok(()) when the
+// gate should be skipped (placement off, user opted out, new-user
+// grace, no eligible campaign — same shape as `gate_next` returning
+// `gate_required: false`).
+//
+// When the gate IS required, validates the `X-Ad-Save-Token` header.
+// Missing → 403 with `ad_gate_required` error so the frontend can
+// detect this specific case and re-open the modal. Otherwise
+// validates HMAC + TTL + Redis single-use jti.
+async fn enforce_ad_gate(
+    state: &AppState,
+    auth: &AuthUser,
+    headers: &HeaderMap,
+    existing_date_count: i64,
+) -> Result<(), AppError> {
+    // Placement state.
+    let placement_row: Option<(bool, serde_json::Value)> = sqlx::query_as(
+        "SELECT is_globally_enabled, display_rules FROM ad_placements WHERE key = $1",
+    )
+    .bind(GATE_PLACEMENT_KEY)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some((enabled, rules)) = placement_row else {
+        return Ok(());
+    };
+    if !enabled {
+        return Ok(());
+    }
+
+    // New-user grace.
+    let grace_count = rules
+        .get("new_user_grace_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if grace_count > 0 && (existing_date_count as u64) < grace_count {
+        return Ok(());
+    }
+
+    // Token must be present. We deliberately don't auto-skip when
+    // there's "no eligible campaign" here — if the user reached this
+    // point in the UI, the modal already decided. Without a token,
+    // fail with the structured error code the frontend recognizes.
+    let token = headers
+        .get("x-ad-save-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let Some(token) = token else {
+        return Err(AppError::Forbidden("ad_gate_required".to_string()));
+    };
+
+    let claims = ad_token::verify_save(&token, &state.config.jwt_secret)?;
+
+    // Bind to caller — token minted for one user cannot be redeemed
+    // by another.
+    let expected = ad_token::user_hash(auth.user_id, claims.jti);
+    if expected != claims.user_hash {
+        return Err(AppError::Forbidden("ad_save_token_mismatch".to_string()));
+    }
+    if claims.context != "date_create" {
+        return Err(AppError::Forbidden("ad_save_token_wrong_context".to_string()));
+    }
+
+    // Single-use: SETNX on jti. Token TTL is short (60s) so we expire
+    // the marker on the same horizon.
+    let mut redis = state.redis.clone();
+    let used_key = format!("adsave:{}", claims.jti);
+    let first_use: bool = redis
+        .set_nx::<_, _, bool>(&used_key, "1")
+        .await
+        .map_err(AppError::Redis)?;
+    if !first_use {
+        return Err(AppError::Forbidden("ad_save_token_replay".to_string()));
+    }
+    let ttl = (claims.exp - chrono::Utc::now().timestamp()).max(30);
+    let _: Result<bool, _> = redis.expire(&used_key, ttl).await;
+
+    Ok(())
+}
+
 // ── Handlers ────────────────────────────────────────────────────
 
 /// POST /api/dates
 async fn create_date(
     State(state): State<AppState>,
     auth: AuthUser,
+    headers: HeaderMap,
     Json(body): Json<CreateDateRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     // Require nickname
@@ -291,6 +381,12 @@ async fn create_date(
             "Maximum {MAX_DATES_PER_USER} dates allowed"
         )));
     }
+
+    // ── Gated interstitial check ─────────────────────────────────
+    // If the gate placement is globally enabled AND the user is
+    // opted into ads AND past the new-user grace window, require a
+    // valid X-Ad-Save-Token minted by /api/ads/gate/complete.
+    enforce_ad_gate(&state, &auth, &headers, count).await?;
 
     // Verify city exists and get name + coordinates
     let city_row = sqlx::query_as::<_, (String, f64, f64)>(

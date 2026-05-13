@@ -19,6 +19,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { useLogStore } from "@/stores/logStore";
 import { api } from "@/services/api";
+import { GatedAdModal, type GatedAd } from "@/components/Ads/GatedAdModal";
 import {
   AGE_RANGES,
   HEIGHT_RANGES,
@@ -198,6 +199,13 @@ export function DateEntryForm() {
   const [error, setError] = useState<string | null>(null);
   const [badgeNotification, setBadgeNotification] = useState<string[]>([]);
   const [tagsLoaded, setTagsLoaded] = useState(false);
+  // Ad gate state. When the backend says gate_required, we stash the
+  // form payload here and hold submission until the modal resolves.
+  const [gatedAd, setGatedAd] = useState<GatedAd | null>(null);
+  // Memoize the payload across the gate roundtrip so the user can't
+  // edit fields under the modal and submit a different shape.
+  type DatePayload = Parameters<typeof api.createDate>[0];
+  const [pendingPayload, setPendingPayload] = useState<DatePayload | null>(null);
   // bump this counter to force useMemo to re-derive tag lists after custom tag creation
   const [tagsVersion, setTagsVersion] = useState(0);
 
@@ -300,6 +308,25 @@ export function DateEntryForm() {
     setError(null);
   };
 
+  const persistDate = async (
+    payload: DatePayload,
+    saveToken?: string,
+  ): Promise<void> => {
+    const { date, newBadges } = await api.createDate(payload, { saveToken });
+    addDate(date);
+    if (newBadges.length > 0) {
+      setBadgeNotification(newBadges);
+      setTimeout(() => {
+        setBadgeNotification([]);
+        resetForm();
+        closeDateForm();
+      }, 3000);
+    } else {
+      resetForm();
+      closeDateForm();
+    }
+  };
+
   const handleSubmit = async () => {
     if (!selectedCity || !selectedCountry || !gender || !ageRange) {
       setError("Please fill in gender and age range.");
@@ -309,40 +336,81 @@ export function DateEntryForm() {
     setIsSubmitting(true);
     setError(null);
 
+    const payload: DatePayload = {
+      country_code: selectedCountry,
+      city_id: selectedCity.id,
+      gender,
+      age_range: ageRange,
+      height_range: heightRange || undefined,
+      person_nickname: personNickname.trim() || undefined,
+      description: description.trim() || undefined,
+      rating,
+      face_rating: faceRating,
+      body_rating: bodyRating,
+      chat_rating: chatRating,
+      date_at: dateAt,
+      tag_ids: Array.from(selectedTagIds),
+    };
+
+    // Probe the ad gate first. If it fails (network/server), we fall
+    // through and let the backend make the authoritative call —
+    // matches the spec's graceful fallback.
     try {
-      const { date, newBadges } = await api.createDate({
-        country_code: selectedCountry,
-        city_id: selectedCity.id,
-        gender,
-        age_range: ageRange,
-        height_range: heightRange || undefined,
-        person_nickname: personNickname.trim() || undefined,
-        description: description.trim() || undefined,
-        rating,
-        face_rating: faceRating,
-        body_rating: bodyRating,
-        chat_rating: chatRating,
-        date_at: dateAt,
-        tag_ids: Array.from(selectedTagIds),
-      });
-
-      addDate(date);
-
-      if (newBadges.length > 0) {
-        setBadgeNotification(newBadges);
-        setTimeout(() => {
-          setBadgeNotification([]);
-          resetForm();
-          closeDateForm();
-        }, 3000);
-      } else {
-        resetForm();
-        closeDateForm();
+      const gate = await api.adGateNext("date_create");
+      if (gate.gate_required) {
+        // Hold the payload, open the modal. Submission resumes from
+        // the modal's onComplete with a save token.
+        setPendingPayload(payload);
+        setGatedAd(gate);
+        // We stay in `isSubmitting=true` so the user can't click
+        // the form's submit button again while the modal is up.
+        return;
       }
+    } catch (gateErr) {
+      // Gate probe failed — log and proceed without a token. Backend
+      // either has the gate disabled (succeeds) or will reject with
+      // ad_gate_required (we surface that as an error).
+      console.warn("ad gate probe failed, proceeding without it", gateErr);
+    }
+
+    try {
+      await persistDate(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save date");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleGateComplete = async (
+    outcome: "completed" | "skipped",
+    elapsedMs: number,
+  ) => {
+    if (!gatedAd || !pendingPayload) return;
+    try {
+      const { save_token } = await api.adGateComplete(
+        gatedAd.gate_token,
+        outcome,
+        elapsedMs,
+      );
+      // Close the modal before the network roundtrip for the date —
+      // the dashboard mount can be slow on first paint and we don't
+      // want the user staring at the ad screen.
+      setGatedAd(null);
+      try {
+        await persistDate(pendingPayload, save_token);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to save date");
+      } finally {
+        setPendingPayload(null);
+        setIsSubmitting(false);
+      }
+    } catch (err) {
+      // Bubble the failure up into the modal's own error pane so the
+      // user gets feedback in context.
+      throw err instanceof Error
+        ? err
+        : new Error("Ad gate completion failed");
     }
   };
 
@@ -635,6 +703,12 @@ export function DateEntryForm() {
           {isSubmitting ? "Saving..." : "Save Date"}
         </Button>
       </div>
+      {gatedAd && (
+        <GatedAdModal
+          ad={gatedAd}
+          onComplete={handleGateComplete}
+        />
+      )}
     </Modal>
   );
 }

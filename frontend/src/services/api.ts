@@ -128,27 +128,31 @@ export const api = {
     }),
 
   // Dates
-  createDate: async (data: {
-    country_code: string;
-    city_id: number;
-    gender: "male" | "female" | "other";
-    age_range: string;
-    height_range?: string;
-    person_nickname?: string;
-    description?: string;
-    rating: number;
-    face_rating?: number;
-    body_rating?: number;
-    chat_rating?: number;
-    date_at: string;
-    tag_ids: number[];
-  }): Promise<{ date: DateEntry; newBadges: string[] }> => {
+  createDate: async (
+    data: {
+      country_code: string;
+      city_id: number;
+      gender: "male" | "female" | "other";
+      age_range: string;
+      height_range?: string;
+      person_nickname?: string;
+      description?: string;
+      rating: number;
+      face_rating?: number;
+      body_rating?: number;
+      chat_rating?: number;
+      date_at: string;
+      tag_ids: number[];
+    },
+    opts?: { saveToken?: string },
+  ): Promise<{ date: DateEntry; newBadges: string[] }> => {
     const token = useAuthStore.getState().token;
     const response = await fetch(`${API_BASE}/dates`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(opts?.saveToken ? { "X-Ad-Save-Token": opts.saveToken } : {}),
       },
       body: JSON.stringify(data),
     });
@@ -160,13 +164,54 @@ export const api = {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const json: any = await response.json();
-    if (!json.success) throw new Error(json.error ?? "Unknown error");
+    if (!json.success) {
+      // Surface the structured ad_gate_required error verbatim so
+      // DateForm can detect it and re-open the gate modal.
+      throw new Error(json.error ?? "Unknown error");
+    }
 
     return {
       date: mapDate(json.data),
       newBadges: json.new_badges ?? [],
     };
   },
+
+  // Ads — gated interstitial
+  adGateNext: (context: "date_create" = "date_create") =>
+    request<
+      | { gate_required: false; reason: string }
+      | {
+          gate_required: true;
+          context: string;
+          campaign_id: string;
+          placement_key: string;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          creative: any;
+          click_url: string;
+          min_view_seconds: number;
+          skip_after_seconds: number;
+          gate_token: string;
+        }
+    >(`/ads/gate/next?context=${encodeURIComponent(context)}`),
+
+  adGateComplete: (
+    gateToken: string,
+    outcome: "completed" | "skipped",
+    completionMs?: number,
+  ) =>
+    request<{
+      save_token: string;
+      expires_in: number;
+      context: string;
+      outcome: "completed" | "skipped";
+    }>("/ads/gate/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        gate_token: gateToken,
+        outcome,
+        completion_ms: completionMs,
+      }),
+    }),
 
   getDates: async (cursor?: string, limit?: number): Promise<{ dates: DateEntry[]; next_cursor?: string }> => {
     const params = new URLSearchParams();
@@ -400,8 +445,36 @@ export const api = {
       earnedAt: b.earned_at ?? null,
       gender: b.gender ?? "both",
       tier: b.tier ?? "bronze",
+      isSponsored: b.is_sponsored ?? false,
+      sponsorName: b.sponsor_name ?? null,
+      sponsorClickUrl: b.sponsor_click_url ?? null,
+      sponsorLogoUrl: b.sponsor_logo_url ?? null,
     }));
   },
+
+  trackSponsorClick: (badgeId: number) =>
+    request<{ tracked: boolean }>(`/badges/${badgeId}/sponsor-click`, { method: "POST" }),
+
+  trackBadgeShare: (badgeId: number) =>
+    request<{ tracked: boolean }>(`/badges/${badgeId}/share`, { method: "POST" }),
+
+  // Auth bypass — paylaşım linki açıldığında çağrılır.
+  getPublicBadge: (badgeId: number) =>
+    request<{
+      id: number;
+      name: string;
+      description: string;
+      icon: string;
+      category: string;
+      threshold: number;
+      gender: string;
+      tier: "bronze" | "silver" | "gold" | "premium";
+      image_url: string | null;
+      is_sponsored: boolean;
+      sponsor_name: string | null;
+      sponsor_click_url: string | null;
+      brand_display_name: string | null;
+    }>(`/badges/public/${badgeId}`),
 
   getFriendBadges: async (friendId: string): Promise<Badge[]> => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -417,6 +490,10 @@ export const api = {
       earnedAt: b.earned_at ?? null,
       gender: b.gender ?? "both",
       tier: b.tier ?? "bronze",
+      isSponsored: b.is_sponsored ?? false,
+      sponsorName: b.sponsor_name ?? null,
+      sponsorClickUrl: b.sponsor_click_url ?? null,
+      sponsorLogoUrl: b.sponsor_logo_url ?? null,
     }));
   },
 
@@ -567,6 +644,61 @@ export const api = {
       share_dates: boolean;
       share_stats: boolean;
     }>("/privacy", { method: "PUT", body: JSON.stringify(data) }),
+
+  getPublicStats: () =>
+    request<{
+      as_of: string | null;
+      headline: {
+        as_of: string;
+        total_users: number | null;
+        dau: number | null;
+        mau: number | null;
+        total_dates_logged: number;
+        new_users_today: number | null;
+      } | null;
+      segments: Record<string, Array<{ value: string; size: number }>>;
+      trend_30d: Array<{ date: string; dau: number | null; mau: number | null }>;
+      k_threshold: number;
+      anonymity_note: string;
+    }>("/stats/public"),
+
+  // Ads (Faz 4.6) — user-facing
+  getNextAd: (placement: string) =>
+    request<{
+      campaign_id: string;
+      placement_key: string;
+      creative: {
+        image_url?: string;
+        title?: string;
+        body?: string;
+        cta?: string;
+        sponsor_name?: string;
+        logo_url?: string;
+      };
+      click_url: string;
+      impression_token: string;
+      dwell_ms_for_impression: number;
+    } | null>(`/ads/next?placement=${encodeURIComponent(placement)}`),
+
+  recordAdClick: (impressionToken: string) =>
+    request<{ redirect_url: string; tracked: boolean }>("/ads/click", {
+      method: "POST",
+      body: JSON.stringify({ impression_token: impressionToken }),
+    }),
+
+  recordAdEvent: (
+    impressionToken: string,
+    eventType: string,
+    value?: number,
+  ) =>
+    request<{ recorded: string }>("/ads/event", {
+      method: "POST",
+      body: JSON.stringify({
+        impression_token: impressionToken,
+        event_type: eventType,
+        ...(value !== undefined ? { value } : {}),
+      }),
+    }),
 
   // Profile
   getMe: async (): Promise<{

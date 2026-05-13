@@ -1,4 +1,12 @@
 pub mod admin;
+pub mod admin_admin_users;
+pub mod admin_ads;
+pub mod admin_auth;
+pub mod admin_brands;
+pub mod admin_notifications;
+pub mod admin_stats;
+pub mod ads;
+pub mod affiliate;
 pub mod auth;
 pub mod badges;
 pub mod cities;
@@ -42,5 +50,15 @@ pub fn api_router() -> Router<AppState> {
         .nest("/forum", forum::router())
         .nest("/notifications", notifications::router())
         .nest("/partners", partners::router())
-        .nest("/admin", admin::router())
+        .nest(
+            "/admin",
+            admin::router()
+                .merge(admin_auth::router())
+                .merge(admin_brands::router())
+                .merge(admin_admin_users::router())
+                .merge(admin_notifications::router()),
+        )
+        .nest("/admin/stats", admin_stats::router())
+        .nest("/admin/ads", admin_ads::router().merge(affiliate::admin_router()))
+        .nest("/ads", ads::router())
 }

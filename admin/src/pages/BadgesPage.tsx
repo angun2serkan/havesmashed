@@ -1,17 +1,15 @@
 import { useEffect, useState, useMemo, useRef, type FormEvent, type ChangeEvent } from 'react'
-import { Plus, Pencil, Trash2, X, Check, Upload, Filter, Smile } from 'lucide-react'
-import { adminApi } from '@/services/api'
+import { Plus, Pencil, Trash2, X, Check, Upload, Filter, Smile, Sparkles, Award, MousePointerClick } from 'lucide-react'
+import { adminApi, type BadgeRow } from '@/services/api'
+import { BadgeSponsorModal } from '@/components/BadgeSponsorModal'
 import EmojiPicker, { Theme } from 'emoji-picker-react'
 
-interface BadgeRow {
-  id: number
+type SponsorStat = {
+  badge_id: number
   name: string
-  description: string
-  icon: string
-  category: string
-  threshold: number
-  image_url: string | null
-  gender: 'male' | 'female' | 'lgbt' | 'both'
+  sponsor_name: string | null
+  total_unlocks: number
+  sponsor_click_count: number
 }
 
 const categories = ['dates', 'explore', 'social', 'quality'] as const
@@ -37,6 +35,8 @@ const emptyForm = {
 
 export default function BadgesPage() {
   const [badges, setBadges] = useState<BadgeRow[]>([])
+  const [sponsorStats, setSponsorStats] = useState<Record<number, SponsorStat>>({})
+  const [sponsorEditId, setSponsorEditId] = useState<number | null>(null)
   const [form, setForm] = useState(emptyForm)
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -45,6 +45,7 @@ export default function BadgesPage() {
   const [editForm, setEditForm] = useState(emptyForm)
   const [editUploading, setEditUploading] = useState(false)
   const [genderFilter, setGenderFilter] = useState<GenderFilter>('all')
+  const [onlySponsored, setOnlySponsored] = useState(false)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [showEditEmojiPicker, setShowEditEmojiPicker] = useState(false)
   const emojiRef = useRef<HTMLDivElement>(null)
@@ -65,6 +66,16 @@ export default function BadgesPage() {
       .getBadges()
       .then(setBadges)
       .catch((err: Error) => setError(err.message))
+    adminApi
+      .getSponsoredBadgeStats()
+      .then((rows) => {
+        const map: Record<number, SponsorStat> = {}
+        for (const r of rows) map[r.badge_id] = r
+        setSponsorStats(map)
+      })
+      .catch(() => {
+        // Stats are decorative — don't surface fetch errors to the operator.
+      })
   }
 
   useEffect(() => {
@@ -72,9 +83,17 @@ export default function BadgesPage() {
   }, [])
 
   const filteredBadges = useMemo(() => {
-    if (genderFilter === 'all') return badges
-    return badges.filter((b) => b.gender === genderFilter)
-  }, [badges, genderFilter])
+    return badges.filter((b) => {
+      if (genderFilter !== 'all' && b.gender !== genderFilter) return false
+      if (onlySponsored && !b.is_sponsored) return false
+      return true
+    })
+  }, [badges, genderFilter, onlySponsored])
+
+  const sponsorEditingBadge = useMemo(
+    () => badges.find((b) => b.id === sponsorEditId) ?? null,
+    [badges, sponsorEditId],
+  )
 
   async function handleImageUpload(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -332,7 +351,18 @@ export default function BadgesPage() {
             </button>
           ))}
         </div>
-        {genderFilter !== 'all' && (
+        <button
+          onClick={() => setOnlySponsored((v) => !v)}
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors inline-flex items-center gap-1.5 ${
+            onlySponsored
+              ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
+              : 'bg-dark-800 text-dark-400 border border-dark-700 hover:bg-dark-700 hover:text-dark-300'
+          }`}
+        >
+          <Sparkles size={14} />
+          Sponsored only
+        </button>
+        {(genderFilter !== 'all' || onlySponsored) && (
           <span className="text-xs text-dark-500">
             {filteredBadges.length} of {badges.length} badges
           </span>
@@ -344,7 +374,11 @@ export default function BadgesPage() {
         {filteredBadges.map((badge) => (
           <div
             key={badge.id}
-            className="bg-dark-800 border border-dark-700 rounded-xl p-5"
+            className={`bg-dark-800 rounded-xl p-5 border ${
+              badge.is_sponsored
+                ? 'border-yellow-500/40 shadow-[0_0_0_1px_rgba(234,179,8,0.15)]'
+                : 'border-dark-700'
+            }`}
           >
             {editId === badge.id ? (
               <div className="space-y-2">
@@ -475,8 +509,18 @@ export default function BadgesPage() {
                       <span className="text-4xl">{badge.icon}</span>
                     )}
                     <div>
-                      <h4 className="font-semibold text-white">{badge.name}</h4>
                       <div className="flex items-center gap-1.5">
+                        {badge.is_sponsored && (
+                          <span
+                            className="text-yellow-300"
+                            title={`Sponsored${badge.sponsor_name ? ` by ${badge.sponsor_name}` : ''}`}
+                          >
+                            \u2726
+                          </span>
+                        )}
+                        <h4 className="font-semibold text-white">{badge.name}</h4>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-0.5">
                         <span className="text-xs text-neon-400 bg-neon-500/10 px-2 py-0.5 rounded-full">
                           {badge.category}
                         </span>
@@ -509,6 +553,17 @@ export default function BadgesPage() {
                   </div>
                   <div className="flex gap-1">
                     <button
+                      onClick={() => setSponsorEditId(badge.id)}
+                      title={badge.is_sponsored ? 'Edit sponsor' : 'Add sponsor'}
+                      className={`p-1.5 rounded transition-colors ${
+                        badge.is_sponsored
+                          ? 'bg-yellow-500/20 text-yellow-300 hover:bg-yellow-500/30'
+                          : 'bg-dark-700 text-dark-400 hover:bg-dark-600 hover:text-yellow-300'
+                      }`}
+                    >
+                      <Sparkles size={14} />
+                    </button>
+                    <button
                       onClick={() => startEdit(badge)}
                       className="p-1.5 rounded bg-neon-500/20 text-neon-400 hover:bg-neon-500/30 transition-colors"
                     >
@@ -526,6 +581,47 @@ export default function BadgesPage() {
                 <p className="text-xs text-dark-500">
                   Threshold: <span className="text-dark-300">{badge.threshold}</span>
                 </p>
+                {badge.is_sponsored && (
+                  <div className="mt-3 pt-3 border-t border-yellow-500/20">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        {badge.sponsor_logo_url && (
+                          <img
+                            src={badge.sponsor_logo_url}
+                            alt={badge.sponsor_name ?? ''}
+                            className="h-4 w-auto rounded bg-dark-950 p-0.5"
+                          />
+                        )}
+                        <span className="text-xs text-yellow-300 font-medium">
+                          Presented by {badge.sponsor_name ?? '—'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="bg-dark-900/60 border border-dark-700 rounded-lg px-2 py-1.5">
+                        <div className="flex items-center gap-1 text-[10px] text-dark-400 uppercase tracking-wider">
+                          <Award size={10} /> Unlocks
+                        </div>
+                        <div className="text-sm font-semibold text-white mt-0.5">
+                          {sponsorStats[badge.id]?.total_unlocks ?? 0}
+                        </div>
+                      </div>
+                      <div className="bg-dark-900/60 border border-dark-700 rounded-lg px-2 py-1.5">
+                        <div className="flex items-center gap-1 text-[10px] text-dark-400 uppercase tracking-wider">
+                          <MousePointerClick size={10} /> Brand clicks
+                        </div>
+                        <div className="text-sm font-semibold text-white mt-0.5">
+                          {sponsorStats[badge.id]?.sponsor_click_count ?? badge.sponsor_click_count}
+                        </div>
+                      </div>
+                    </div>
+                    {badge.sponsor_click_url && (
+                      <p className="mt-2 text-[10px] text-dark-500 truncate" title={badge.sponsor_click_url}>
+                        → {badge.sponsor_click_url}
+                      </p>
+                    )}
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -536,6 +632,17 @@ export default function BadgesPage() {
           </div>
         )}
       </div>
+
+      {sponsorEditingBadge && (
+        <BadgeSponsorModal
+          badge={sponsorEditingBadge}
+          onClose={() => setSponsorEditId(null)}
+          onSaved={() => {
+            setSponsorEditId(null)
+            fetchBadges()
+          }}
+        />
+      )}
     </div>
   )
 }
