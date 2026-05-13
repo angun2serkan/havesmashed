@@ -1,9 +1,3 @@
-mod config;
-mod error;
-mod handlers;
-mod middleware;
-mod services;
-
 use axum::Router;
 use http::HeaderValue;
 use sqlx::postgres::PgPoolOptions;
@@ -11,14 +5,11 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
-use crate::config::Config;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub db: sqlx::PgPool,
-    pub redis: redis::aio::ConnectionManager,
-    pub config: Config,
-}
+use havesmashed_backend::config::Config;
+use havesmashed_backend::handlers;
+use havesmashed_backend::middleware;
+use havesmashed_backend::services::{analytics_aggregator, budget_aggregator, event_tracker};
+use havesmashed_backend::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -79,9 +70,17 @@ async fn main() -> anyhow::Result<()> {
             .allow_headers(Any)
     };
 
+    // Background tasks: hourly Redis→Postgres drain, daily aggregator.
+    spawn_analytics_workers(state.clone());
+
     let app = Router::new()
         .nest("/api", handlers::api_router())
+        .merge(handlers::affiliate::public_router())
         .nest_service("/uploads", ServeDir::new("uploads"))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::event_tracker::track,
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state);
@@ -90,7 +89,67 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Starting server on {addr}");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
+}
+
+// ── Analytics background workers ──────────────────────────────────
+//
+// Two periodic tasks run for the life of the server:
+//   * `event_tracker::drain` — every hour, moves Redis-buffered
+//     engagement counts into `event_counters`.
+//   * `analytics_aggregator::run_daily` — every 24h, recomputes
+//     yesterday's `daily_metrics` and `segment_metrics`. Idempotent
+//     so a missed tick is recovered on the next run.
+//
+// Failures are logged and the worker keeps ticking; analytics must
+// never bring the API down.
+fn spawn_analytics_workers(state: AppState) {
+    let drain_state = state.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let mut redis = drain_state.redis.clone();
+            match event_tracker::drain(&mut redis, &drain_state.db).await {
+                Ok(n) if n > 0 => tracing::info!("event_tracker drained {n} fields"),
+                Ok(_) => {}
+                Err(e) => tracing::error!("event_tracker drain failed: {e}"),
+            }
+        }
+    });
+
+    let agg_state = state.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+            if let Err(e) = analytics_aggregator::run_daily(&agg_state.db, yesterday).await {
+                tracing::error!("analytics_aggregator daily run failed: {e}");
+            }
+        }
+    });
+
+    // T0.4 — budget aggregator: every 5 minutes, refresh spent_cents,
+    // fire 50/80/95 alerts, auto-pause at 100%.
+    let budget_state = state;
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let mut redis = budget_state.redis.clone();
+            if let Err(e) = budget_aggregator::run_once(&budget_state.db, &mut redis).await {
+                tracing::error!("budget_aggregator tick failed: {e}");
+            }
+        }
+    });
 }

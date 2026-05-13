@@ -7,6 +7,7 @@ pub struct Config {
     pub jwt_secret: String,
     pub jwt_expiry_secs: u64,
     pub admin_api_key: String,
+    pub admin_api_name: String,
     pub host: String,
     pub port: u16,
 }
@@ -22,6 +23,8 @@ impl Config {
                 .parse()
                 .expect("JWT_EXPIRY must be a valid number"),
             admin_api_key: env::var("ADMIN_API_KEY").expect("ADMIN_API_KEY must be set"),
+            admin_api_name: env::var("ADMIN_API_NAME")
+                .unwrap_or_else(|_| "Super Admin".to_string()),
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
             port: env::var("PORT")
                 .unwrap_or_else(|_| "3000".to_string())

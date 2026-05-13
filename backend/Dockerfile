@@ -8,13 +8,16 @@ ENV SQLX_OFFLINE=true
 
 # Dependency cache: sadece Cargo dosyalarini kopyalayip derle
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN mkdir -p src/bin \
+    && echo "fn main() {}" > src/main.rs \
+    && echo "" > src/lib.rs \
+    && echo "fn main() {}" > src/bin/create_admin.rs
 RUN cargo build --release && rm -rf src
 
 # Gercek kaynak kodu kopyala ve derle
 COPY src ./src
 COPY migrations ./migrations
-RUN touch src/main.rs
+RUN touch src/main.rs src/lib.rs src/bin/create_admin.rs
 RUN cargo build --release
 
 # ── Stage 2: Runtime ─────────────────────────────────────────

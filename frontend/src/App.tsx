@@ -13,6 +13,11 @@ import { NotificationsPage } from "@/pages/NotificationsPage";
 import { ForumPage } from "@/pages/ForumPage";
 import { TopicDetailPage } from "@/pages/TopicDetailPage";
 import { RelationshipsPage } from "@/pages/RelationshipsPage";
+import { PrivacyPage } from "@/pages/PrivacyPage";
+import { PublicStatsPage } from "@/pages/PublicStatsPage";
+import { ReportsIndexPage } from "@/pages/Reports/ReportsIndexPage";
+import { ReportRoute } from "@/pages/Reports/ReportRoute";
+import { BadgePublicPage } from "@/pages/BadgePublicPage";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -147,6 +152,12 @@ export default function App() {
           }
         />
         <Route path="/invite/:id" element={<InvitePage />} />
+        <Route path="/privacy" element={<PrivacyPage />} />
+        <Route path="/stats" element={<PublicStatsPage />} />
+        <Route path="/reports" element={<ReportsIndexPage />} />
+        <Route path="/reports/:slug" element={<ReportRoute />} />
+        {/* Public badge share landing (anonim) */}
+        <Route path="/b/:id" element={<BadgePublicPage />} />
       </Routes>
     </Layout>
   );

@@ -1,9 +1,16 @@
 import { useState } from "react";
+import { Share2 } from "lucide-react";
 import type { Badge } from "@/types";
+import { api } from "@/services/api";
+import { ShareDialog } from "@/components/Share/ShareDialog";
 
 interface BadgeGridProps {
   badges: Badge[];
   showLocked?: boolean; // true = show all (locked grayed out), false = only earned
+  /** Earned badge'lerdeki share dialog default mesajını kişiselleştirmek için. */
+  userNickname?: string | null;
+  /** Default mesaj template'ine "32 date" gibi rakam koymak için. Opsiyonel. */
+  dateCount?: number | null;
 }
 
 type GenderFilter = "all" | "male" | "female" | "lgbt" | "both";
@@ -23,6 +30,9 @@ function genderIndicator(gender: string) {
 
 function tierStyle(tier: string): { borderColor: string; glowColor: string; label: string } {
   switch (tier) {
+    // Premium: brand-sponsorlu badge'ler — magenta/deep purple, en güçlü glow.
+    // Görsel olarak gold'un da üstünde, "sözleşmeli ayrıcalık" hissi verir.
+    case "premium": return { borderColor: "#d946ef", glowColor: "rgba(217,70,239,0.5)", label: "PREMIUM" };
     case "gold": return { borderColor: "#facc15", glowColor: "rgba(250,204,21,0.3)", label: "GOLD" };
     case "silver": return { borderColor: "#94a3b8", glowColor: "rgba(148,163,184,0.3)", label: "SILVER" };
     default: return { borderColor: "#d97706", glowColor: "rgba(217,119,6,0.2)", label: "BRONZE" };
@@ -50,8 +60,16 @@ const genderFilterOptions: { label: string; value: GenderFilter }[] = [
   { label: "General", value: "both" },
 ];
 
-export function BadgeGrid({ badges, showLocked = false }: BadgeGridProps) {
+export function BadgeGrid({
+  badges,
+  showLocked = false,
+  userNickname,
+  dateCount,
+}: BadgeGridProps) {
   const [genderFilter, setGenderFilter] = useState<GenderFilter>("all");
+  const [sharingBadge, setSharingBadge] = useState<Badge | null>(null);
+  const origin =
+    typeof window !== "undefined" ? window.location.origin : "https://haveismash.com";
 
   const filtered =
     genderFilter === "all"
@@ -162,11 +180,81 @@ export function BadgeGrid({ badges, showLocked = false }: BadgeGridProps) {
                   {new Date(badge.earnedAt).toLocaleDateString()}
                 </p>
               )}
+
+              {/* Share button — earned badge'lerde, sadece hover'da görünür */}
+              {badge.earned && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSharingBadge(badge);
+                  }}
+                  className="absolute bottom-1.5 right-1.5 p-1 rounded-full bg-dark-900/80 border border-dark-700 text-dark-400 hover:text-neon-400 hover:border-neon-500/50 opacity-0 group-hover:opacity-100 transition-opacity"
+                  aria-label="Paylaş"
+                  title="Paylaş"
+                >
+                  <Share2 size={11} />
+                </button>
+              )}
+
+              {/* Sponsor strip — only on earned & sponsored badges */}
+              {badge.earned && badge.isSponsored && badge.sponsorName && (
+                <SponsorStrip badge={badge} />
+              )}
             </div>
             );
           })}
         </div>
       )}
+
+      {sharingBadge && (
+        <ShareDialog
+          mode={{
+            type: "badge",
+            badge: sharingBadge,
+            shareUrl: `${origin}/b/${sharingBadge.id}`,
+            userNickname,
+            dateCount,
+          }}
+          onClose={() => setSharingBadge(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function SponsorStrip({ badge }: { badge: Badge }) {
+  const onClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!badge.sponsorClickUrl) return;
+    // Fire-and-forget — don't block redirect on tracking failure.
+    api.trackSponsorClick(badge.id).catch(() => {});
+    const a = document.createElement("a");
+    a.href = badge.sponsorClickUrl;
+    a.rel = "noreferrer noopener";
+    a.target = "_blank";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mt-2 w-full flex items-center justify-center gap-1.5 py-1 rounded-md bg-dark-900/70 border border-dark-700 hover:border-neon-500/40 transition-colors"
+      title={`Presented by ${badge.sponsorName}`}
+    >
+      {badge.sponsorLogoUrl && (
+        <img
+          src={badge.sponsorLogoUrl}
+          alt={badge.sponsorName ?? ""}
+          className="h-3 w-auto"
+        />
+      )}
+      <span className="text-[9px] text-dark-300 uppercase tracking-wide truncate">
+        Presented by {badge.sponsorName}
+      </span>
+    </button>
   );
 }

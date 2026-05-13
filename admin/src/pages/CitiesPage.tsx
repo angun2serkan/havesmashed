@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useMemo, useCallback, type FormEvent } from 'react'
-import { Plus, Pencil, Trash2, X, Check, MapPin, Filter, ArrowLeft, Upload } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, Check, MapPin, Filter, ArrowLeft, Upload, Search, ChevronLeft, ChevronRight } from 'lucide-react'
 import { adminApi } from '@/services/api'
 import { MapContainer, TileLayer, GeoJSON, Marker, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
@@ -400,6 +400,9 @@ export default function CitiesPage() {
   const [showCoordPicker, setShowCoordPicker] = useState(false)
   const [showBulkImport, setShowBulkImport] = useState(false)
   const [countryFilter, setCountryFilter] = useState('')
+  const [searchTerm, setSearchTerm] = useState('')
+  const [page, setPage] = useState(1)
+  const PAGE_SIZE = 25
 
   function fetchCities() {
     adminApi
@@ -418,11 +421,27 @@ export default function CitiesPage() {
     return codes
   }, [cities])
 
-  // Filter cities by selected country code
+  // Filter cities by country and name search
   const filteredCities = useMemo(() => {
-    if (!countryFilter) return cities
-    return cities.filter((c) => c.country_code === countryFilter)
-  }, [cities, countryFilter])
+    const q = searchTerm.trim().toLowerCase()
+    return cities.filter((c) => {
+      if (countryFilter && c.country_code !== countryFilter) return false
+      if (q && !c.name.toLowerCase().includes(q)) return false
+      return true
+    })
+  }, [cities, countryFilter, searchTerm])
+
+  // Reset to first page whenever filters change
+  useEffect(() => {
+    setPage(1)
+  }, [searchTerm, countryFilter])
+
+  const totalPages = Math.max(1, Math.ceil(filteredCities.length / PAGE_SIZE))
+  const currentPage = Math.min(page, totalPages)
+  const pagedCities = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE
+    return filteredCities.slice(start, start + PAGE_SIZE)
+  }, [filteredCities, currentPage])
 
   async function handleCreate(e: FormEvent) {
     e.preventDefault()
@@ -579,27 +598,50 @@ export default function CitiesPage() {
         </div>
       )}
 
-      {/* Country Filter */}
-      <div className="flex items-center gap-3 mb-4">
-        <Filter size={16} className="text-dark-400" />
-        <span className="text-sm text-dark-400">Filter by country:</span>
-        <select
-          value={countryFilter}
-          onChange={(e) => setCountryFilter(e.target.value)}
-          className="px-3 py-1.5 bg-dark-800 border border-dark-600 rounded-lg text-white text-sm focus:outline-none focus:border-neon-500 transition-colors appearance-none pr-8"
-        >
-          <option value="">All</option>
-          {countryCodes.map((code) => (
-            <option key={code} value={code}>
-              {code.toUpperCase()}
-            </option>
-          ))}
-        </select>
-        {countryFilter && (
-          <span className="text-xs text-dark-500">
-            {filteredCities.length} of {cities.length} cities
-          </span>
-        )}
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-dark-400 pointer-events-none" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search by name..."
+            className="pl-9 pr-8 py-1.5 bg-dark-800 border border-dark-600 rounded-lg text-white text-sm placeholder-dark-500 focus:outline-none focus:border-neon-500 transition-colors w-64"
+          />
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => setSearchTerm('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-dark-400 hover:text-white hover:bg-dark-700 transition-colors"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Filter size={16} className="text-dark-400" />
+          <span className="text-sm text-dark-400">Country:</span>
+          <select
+            value={countryFilter}
+            onChange={(e) => setCountryFilter(e.target.value)}
+            className="px-3 py-1.5 bg-dark-800 border border-dark-600 rounded-lg text-white text-sm focus:outline-none focus:border-neon-500 transition-colors appearance-none pr-8"
+          >
+            <option value="">All</option>
+            {countryCodes.map((code) => (
+              <option key={code} value={code}>
+                {code.toUpperCase()}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <span className="text-xs text-dark-500">
+          {filteredCities.length === cities.length
+            ? `${cities.length} cities`
+            : `${filteredCities.length} of ${cities.length} cities`}
+        </span>
       </div>
 
       {/* Cities Table */}
@@ -617,7 +659,7 @@ export default function CitiesPage() {
             </tr>
           </thead>
           <tbody>
-            {filteredCities.map((city) => (
+            {pagedCities.map((city) => (
               <tr key={city.id} className="border-b border-dark-700/50 hover:bg-dark-900/50">
                 {editId === city.id ? (
                   <>
@@ -706,7 +748,7 @@ export default function CitiesPage() {
                 )}
               </tr>
             ))}
-            {filteredCities.length === 0 && (
+            {pagedCities.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-4 py-8 text-center text-dark-500">
                   No cities found
@@ -715,6 +757,39 @@ export default function CitiesPage() {
             )}
           </tbody>
         </table>
+
+        {filteredCities.length > 0 && (
+          <div className="flex items-center justify-between px-4 py-3 border-t border-dark-700 text-sm">
+            <span className="text-dark-400">
+              Showing {(currentPage - 1) * PAGE_SIZE + 1}–
+              {Math.min(currentPage * PAGE_SIZE, filteredCities.length)} of{' '}
+              {filteredCities.length}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="flex items-center gap-1 px-3 py-1.5 bg-dark-700 text-dark-200 rounded-lg hover:bg-dark-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <ChevronLeft size={14} />
+                Prev
+              </button>
+              <span className="text-dark-300 px-2">
+                Page {currentPage} / {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="flex items-center gap-1 px-3 py-1.5 bg-dark-700 text-dark-200 rounded-lg hover:bg-dark-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Next
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Coordinate Picker Modal */}

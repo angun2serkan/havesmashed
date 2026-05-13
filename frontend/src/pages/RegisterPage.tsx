@@ -81,9 +81,11 @@ export function RegisterPage() {
     <div className="min-h-screen flex items-center justify-center bg-dark-950 px-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-neon-500 text-glow mb-1">
-            havesmashed
-          </h1>
+          <img
+            src="/logo.png"
+            alt="havesmashed"
+            className="w-28 h-28 mx-auto mb-3 object-contain drop-shadow-[0_0_16px_rgba(244,114,182,0.35)]"
+          />
           <p className="text-dark-400 text-sm">
             Create your anonymous account
           </p>

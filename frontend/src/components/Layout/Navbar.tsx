@@ -56,7 +56,17 @@ export function Navbar() {
     <>
       {/* Desktop sidebar */}
       <nav className="hidden md:flex fixed left-0 top-0 h-full w-20 flex-col items-center py-6 bg-dark-900/80 backdrop-blur-md border-r border-dark-700 z-40 gap-2">
-        <div className="text-neon-500 font-bold text-xl mb-8 text-glow">H</div>
+        <Link
+          to="/"
+          className="mb-8 flex items-center justify-center w-14 h-14 rounded-full bg-neon-500/10 ring-1 ring-neon-500/30 hover:bg-neon-500/20 hover:ring-neon-500/50 transition-colors"
+          title="havesmashed"
+        >
+          <img
+            src="/logo-icon.png"
+            alt="havesmashed"
+            className="w-11 h-11 object-contain drop-shadow-[0_0_10px_rgba(236,72,153,0.6)]"
+          />
+        </Link>
         {navItems.map(({ path, icon: Icon, label }) => {
           const isActive = location.pathname === path;
           return (

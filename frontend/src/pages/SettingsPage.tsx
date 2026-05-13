@@ -233,7 +233,11 @@ export function SettingsPage() {
               Yukleniyor...
             </p>
           ) : (
-            <BadgeGrid badges={badges} showLocked={true} />
+            <BadgeGrid
+              badges={badges}
+              showLocked={true}
+              userNickname={user?.nickname}
+            />
           )}
         </Card>
 
