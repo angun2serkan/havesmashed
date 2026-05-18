@@ -5,20 +5,53 @@
 // on the right uses PlacementPreview so the operator sees the
 // rendered ad as the form changes.
 
-import { useEffect, useMemo, useState } from 'react'
-import { X, Upload, MapPin, Plus } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { X, Upload, MapPin, Plus, Smile } from 'lucide-react'
+import EmojiPicker, { Theme } from 'emoji-picker-react'
 import {
   adminApi,
   brandsApi,
+  pricingApi,
+  walletApi,
+  DURATION_MONTH_OPTIONS,
+  type ActivePricing,
+  type BadgeCriteria,
   type Brand,
   type Campaign,
   type CampaignCreative,
   type CampaignCreateInput,
+  type DurationMonths,
   type Placement,
   type TargetSegment,
 } from '@/services/api'
 import { effectiveRole, useAdminStore } from '@/stores/adminStore'
+import { formatTRY } from '@/lib/formatTRY'
+import { BadgeCriteriaBuilder } from './BadgeCriteriaBuilder'
 import { PlacementPreview, type PreviewCreative } from './PlacementPreview'
+import { UrlWithAffiliatePicker } from './UrlWithAffiliatePicker'
+
+const DEFAULT_DURATION_MONTHS: DurationMonths = 1
+
+/** starts_at + n ay; takvim-bilinçli (Date.setMonth month-end clamping). */
+function addMonths(date: Date, months: number): Date {
+  const d = new Date(date.getTime())
+  d.setMonth(d.getMonth() + months)
+  return d
+}
+
+// 100 TL katına yukarı yuvarla (backend round_up_to_100_tl ile aynı).
+function roundUpTo100TL(cents: number): number {
+  if (cents <= 0) return 0
+  const unit = 10_000
+  return Math.ceil(cents / unit) * unit
+}
+
+// CEIL(target × cpm / 1000), backend ceil_div_1000 ile aynı.
+function cpmCostCents(targetImpressions: number, unitPriceCents: number): number {
+  if (targetImpressions <= 0 || unitPriceCents <= 0) return 0
+  const raw = Math.ceil((targetImpressions * unitPriceCents) / 1000)
+  return roundUpTo100TL(raw)
+}
 
 const AGE_RANGES = ['18-22', '23-27', '28-32', '33-37', '38-42', '43-47', '48+']
 
@@ -40,31 +73,86 @@ const BEHAVIORS: Array<{ key: string; label: string; desc: string }> = [
   },
 ]
 
+// Creative field için operatör-okur etiket + kısa açıklama. Backend
+// alan adlarını ("cta", "title", "body"...) bu sözlük üzerinden
+// Türkçe'ye çeviriyoruz; sözlükte olmayan alan adı için ham anahtar
+// fallback gösterilir.
+const CREATIVE_FIELD_LABELS: Record<string, { label: string; hint?: string }> = {
+  title: {
+    label: 'Başlık',
+    hint: 'Kartın en üstündeki kalın yazı. Net ve dikkat çekici tut.',
+  },
+  body: {
+    label: 'Açıklama',
+    hint: 'Başlığın altında 1-2 satır görünür; teklif veya fayda detayı.',
+  },
+  cta: {
+    label: 'Buton yazısı',
+    hint: "Tıklama düğmesinde görünür kısa metin. Örn: 'Şimdi al', 'Detaylar', 'Kaydol'. Boş bırakırsan 'Keşfet' kullanılır.",
+  },
+  sponsor_name: {
+    label: 'Sponsor adı',
+    hint: 'Kartın üst şeridinde "Sponsorlu · X" şeklinde görünür.',
+  },
+  image_url: {
+    label: 'Görsel',
+  },
+  video_url: {
+    label: 'Video',
+    hint: 'Opsiyonel — yüklerseniz reklam görsel yerine video oynatır. MP4/WebM, sessiz autoplay edilir.',
+  },
+  logo_url: {
+    label: 'Logo',
+  },
+}
+
+function labelForField(fieldName: string): string {
+  return CREATIVE_FIELD_LABELS[fieldName]?.label ?? fieldName
+}
+
+function hintForField(fieldName: string): string | undefined {
+  return CREATIVE_FIELD_LABELS[fieldName]?.hint
+}
+
 // Spec key → form field mapping. Image fields read *_size keys, text
 // fields read *_max keys; everything else is treated as documentation.
+// *_size_optional ile biten alanlar yüklemeye açıktır ama zorunlu değildir.
+// *_max_seconds → opsiyonel video upload widget'ı; süre limiti client'da
+//   <video>.duration ile doğrulanır.
 type SpecField = {
-  kind: 'text' | 'textarea' | 'image'
+  kind: 'text' | 'textarea' | 'image' | 'video'
   fieldName: keyof CampaignCreative
   maxLength?: number
   sizeHint?: string
+  maxSeconds?: number
+  optional?: boolean
 }
 
 function fieldsFromSpec(spec: Record<string, unknown>): SpecField[] {
   const out: SpecField[] = []
   for (const [k, v] of Object.entries(spec)) {
-    if (k.endsWith('_max') && typeof v === 'number') {
+    if (k.endsWith('_max_seconds') && typeof v === 'number') {
+      // 'video_max_seconds' → fieldName='video_url' (her zaman opsiyonel)
+      const base = k.slice(0, -('_max_seconds'.length))
+      const fieldName = `${base}_url` as keyof CampaignCreative
+      out.push({ kind: 'video', fieldName, maxSeconds: v, optional: true })
+    } else if (k.endsWith('_max') && typeof v === 'number') {
       const fieldName = k.slice(0, -4) as keyof CampaignCreative
       const kind = fieldName === 'body' ? 'textarea' : 'text'
       out.push({ kind, fieldName, maxLength: v })
+    } else if (k.endsWith('_size_optional') && typeof v === 'string') {
+      const base = k.slice(0, -('_size_optional'.length))
+      const fieldName = `${base}_url` as keyof CampaignCreative
+      out.push({ kind: 'image', fieldName, sizeHint: v, optional: true })
     } else if (k.endsWith('_size') && typeof v === 'string') {
       const base = k.slice(0, -5) // 'image_size' → 'image', 'logo_size' → 'logo'
       const fieldName = `${base}_url` as keyof CampaignCreative
       out.push({ kind: 'image', fieldName, sizeHint: v })
     }
   }
-  // Stable order: images first, then short text, then textarea.
+  // Stable order: images first, then videos, then short text, then textarea.
   out.sort((a, b) => {
-    const order = { image: 0, text: 1, textarea: 2 } as const
+    const order = { image: 0, video: 1, text: 2, textarea: 3 } as const
     return order[a.kind] - order[b.kind]
   })
   return out
@@ -97,16 +185,14 @@ export function CampaignEditorModal({
     initial?.placement_key ?? placements[0]?.key ?? '',
   )
 
-  // T0.4 — pricing / budget fields (super-only visible/editable)
-  const [pricingModel, setPricingModel] = useState<'cpm' | 'cpc' | 'flat' | ''>(
-    initial?.pricing_model ?? '',
+  // Paket tier'i: 1/3/6/12 ay. Süre, included impression ve CPM hep buradan.
+  // Brand serbest impression girişi yapmaz — tier paketi seçer.
+  const [durationMonths, setDurationMonths] = useState<DurationMonths>(
+    (initial?.duration_months as DurationMonths | undefined) ?? DEFAULT_DURATION_MONTHS,
   )
-  const [unitPriceCents, setUnitPriceCents] = useState<string>(
-    initial?.unit_price_cents?.toString() ?? '',
-  )
-  const [totalBudgetCents, setTotalBudgetCents] = useState<string>(
-    initial?.total_budget_cents?.toString() ?? '',
-  )
+
+  const [activePricing, setActivePricing] = useState<ActivePricing[]>([])
+  const [walletBalanceCents, setWalletBalanceCents] = useState<number | null>(null)
 
   // Load brands list once for super_admin selector.
   useEffect(() => {
@@ -114,6 +200,15 @@ export function CampaignEditorModal({
       brandsApi.list(false).then(setBrands).catch(() => setBrands([]))
     }
   }, [isSuper])
+
+  // Aktif CPM fiyat listesi (form değişiminde re-fetch gerekmez; modal
+  // ömrü boyunca tek seferlik). Backend her placement için tek satır döndürür.
+  useEffect(() => {
+    pricingApi
+      .listActive()
+      .then(setActivePricing)
+      .catch(() => setActivePricing([]))
+  }, [])
   const [creative, setCreative] = useState<CampaignCreative>(
     initial?.creative ?? {},
   )
@@ -124,11 +219,27 @@ export function CampaignEditorModal({
   )
   const [endsAt, setEndsAt] = useState(
     initial?.ends_at?.slice(0, 16) ??
-      new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 16),
+      addMonths(new Date(), DEFAULT_DURATION_MONTHS).toISOString().slice(0, 16),
   )
-  const [dailyCap, setDailyCap] = useState<string>(
-    initial?.daily_cap?.toString() ?? '',
-  )
+
+  // Cüzdan bakiyesi: brand seçili olduğunda fetch et. Edit'te yine
+  // göstermek için load ederiz; submit edit modunda balance check yapmaz
+  // (target/budget kilitli).
+  const effectiveBrandIdForFetch = isEdit
+    ? initial?.brand_id ?? null
+    : isSuper
+      ? brandId || null
+      : me?.brand?.id ?? me?.impersonating_brand?.id ?? null
+  useEffect(() => {
+    if (!effectiveBrandIdForFetch) {
+      setWalletBalanceCents(null)
+      return
+    }
+    walletApi
+      .get(effectiveBrandIdForFetch)
+      .then((w) => setWalletBalanceCents(w.balance_cents))
+      .catch(() => setWalletBalanceCents(null))
+  }, [effectiveBrandIdForFetch])
   const [weight, setWeight] = useState<string>(initial?.weight?.toString() ?? '1')
   const [isDryRun, setIsDryRun] = useState(initial?.is_dry_run ?? false)
 
@@ -158,6 +269,13 @@ export function CampaignEditorModal({
   // create modunda zorunlu, edit modunda değişiklik bu sürümde
   // desteklenmiyor (badge satırı zaten kampanyaya bağlı).
   const isBadgeSponsor = placementKey === 'badge_sponsor'
+  // forum_thread artık gerçek bir forum_topics satırı oluşturur; kullanıcı
+  // click_url'e değil topic detayına gider. Click URL gizli; submit'te
+  // forum index URL'i otomatik doldurulur (schema NOT NULL).
+  const isForumThread = placementKey === 'forum_thread'
+  // gated_interstitial: dış link yok, click tracking yok. Click URL
+  // anlamsız → form'da gizli, schema NOT NULL için '/' placeholder gönderilir.
+  const isGatedInterstitial = placementKey === 'gated_interstitial'
   const [badgeName, setBadgeName] = useState('')
   const [badgeDescription, setBadgeDescription] = useState('')
   const [badgeIcon, setBadgeIcon] = useState('🏆')
@@ -170,6 +288,10 @@ export function CampaignEditorModal({
   const [badgeVisualMode, setBadgeVisualMode] = useState<'icon' | 'image'>('icon')
   const [badgeImageUrl, setBadgeImageUrl] = useState('')
   const [badgeImageUploading, setBadgeImageUploading] = useState(false)
+  const [showBadgeEmojiPicker, setShowBadgeEmojiPicker] = useState(false)
+  const badgeEmojiRef = useRef<HTMLDivElement>(null)
+  // Sponsored badge için opsiyonel zengin kriter spec'i.
+  const [badgeCriteria, setBadgeCriteria] = useState<BadgeCriteria | null>(null)
 
   const placement = useMemo(
     () => placements.find((p) => p.key === placementKey),
@@ -180,6 +302,54 @@ export function CampaignEditorModal({
     () => (placement ? fieldsFromSpec(placement.creative_spec) : []),
     [placement],
   )
+
+  // Süre chip değiştiyse ends_at otomatik hesaplanır (starts_at + N ay).
+  useEffect(() => {
+    if (isEdit) return
+    const start = new Date(startsAt)
+    if (Number.isNaN(start.getTime())) return
+    setEndsAt(addMonths(start, durationMonths).toISOString().slice(0, 16))
+  }, [durationMonths, startsAt, isEdit])
+
+  // Seçilen placement için tüm tier paketleri (chip render'ında kullanılır).
+  const placementTiers = useMemo(
+    () => activePricing.filter((p) => p.placement_key === placementKey),
+    [activePricing, placementKey],
+  )
+
+  // (placement, durationMonths) tier paketi: CPM + included impressions.
+  const activeTier = useMemo(
+    () => placementTiers.find((p) => p.duration_months === durationMonths) ?? null,
+    [placementTiers, durationMonths],
+  )
+
+  // Paket toplam fiyatı = included × CPM / 1000, 100 TL'ye yuvarla.
+  const costPreviewCents = useMemo(() => {
+    if (activeTier == null) return null
+    return cpmCostCents(activeTier.included_impressions, activeTier.unit_price_cents)
+  }, [activeTier])
+
+  const insufficientBalance =
+    !isEdit &&
+    walletBalanceCents != null &&
+    costPreviewCents != null &&
+    costPreviewCents > 0 &&
+    costPreviewCents > walletBalanceCents
+
+  // Emoji picker dışına tıklayınca kapat.
+  useEffect(() => {
+    if (!showBadgeEmojiPicker) return
+    function handleClick(e: MouseEvent) {
+      if (
+        badgeEmojiRef.current &&
+        !badgeEmojiRef.current.contains(e.target as Node)
+      ) {
+        setShowBadgeEmojiPicker(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [showBadgeEmojiPicker])
 
   // Resolve names for already-selected cities (edit case)
   useEffect(() => {
@@ -254,18 +424,42 @@ export function CampaignEditorModal({
     // super_admin without impersonation must explicitly pick.
     if (isSuper && !brandId && !isEdit) return setError('Brand seçilmeli')
     if (!placementKey) return setError('Placement seçilmeli')
-    if (!clickUrl.trim()) return setError('Click URL gerekli')
+    // forum_thread için kullanıcı click URL girmez (thread detayına gider);
+    // schema NOT NULL olduğu için placeholder dolduruyoruz.
+    const effectiveClickUrl = isForumThread
+      ? clickUrl.trim() || '/forum'
+      : isGatedInterstitial
+        ? clickUrl.trim() || '/'
+        : clickUrl.trim()
+    if (!isForumThread && !isGatedInterstitial && !effectiveClickUrl)
+      return setError('Click URL gerekli')
     const start = new Date(startsAt)
     const end = new Date(endsAt)
     if (end <= start) return setError('Bitiş başlangıçtan sonra olmalı')
 
     // Per-spec text-length checks (mirrors backend validate_creative).
+    // Upload hâlâ devam ediyorsa submit'i bloklayalım — eski bug: kullanıcı
+     // "Yükleniyor…" devam ederken Oluştur'a basıp image_url'siz kampanya
+     // kaydediyordu.
+    if (uploadingField || badgeImageUploading) {
+      return setError('Görsel yüklemesi tamamlanmadan kaydedilemez')
+    }
+
     for (const f of fields) {
-      if (f.kind === 'image') continue
       const val = (creative[f.fieldName] as string | undefined) ?? ''
+      if (f.kind === 'image' || f.kind === 'video') {
+        // Placement spec'inde *_size varsa görsel zorunlu (placement
+        // kart tasarımı görsel olmadan kırık görünür). *_size_optional
+        // ve *_max_seconds (video) ise yüklemeye izin verir ama
+        // zorunluluk koymaz.
+        if (!val && !f.optional) {
+          return setError(`${labelForField(f.fieldName as string)} zorunlu — lütfen yükleyin`)
+        }
+        continue
+      }
       if (f.maxLength && [...val].length > f.maxLength) {
         return setError(
-          `creative.${f.fieldName} en fazla ${f.maxLength} karakter olmalı`,
+          `${labelForField(f.fieldName as string)} en fazla ${f.maxLength} karakter olmalı`,
         )
       }
     }
@@ -284,41 +478,31 @@ export function CampaignEditorModal({
           ...(behaviors.size > 0 ? { behaviors: Array.from(behaviors) } : {}),
         }
 
-    const dc = isBadgeSponsor
-      ? null
-      : dailyCap.trim()
-      ? parseInt(dailyCap, 10)
-      : null
     const w = isBadgeSponsor ? 1 : parseInt(weight, 10) || 1
     const dryRun = isBadgeSponsor ? false : isDryRun
 
-    // T0.4 — pricing payload is super-only; brand_admin fields are
-    // ignored server-side anyway, but we don't even send them.
-    const pricingPayload = isSuper
-      ? {
-          pricing_model: pricingModel || null,
-          unit_price_cents: unitPriceCents
-            ? parseInt(unitPriceCents, 10)
-            : null,
-          total_budget_cents: totalBudgetCents
-            ? parseInt(totalBudgetCents, 10)
-            : null,
-        }
-      : {}
+    // Create modunda tier paketi server tarafında zorunlu; brand impression
+    // girmez, tier seçimiyle paket büyüklüğü belirlenir.
+    if (!isEdit) {
+      if (activeTier == null) {
+        return setError('Bu tier için aktif paket yok')
+      }
+      if (insufficientBalance) {
+        return setError('Brand bakiyesi yetersiz')
+      }
+    }
 
     setSaving(true)
     try {
       if (isEdit && initial) {
         await adminApi.updateCampaign(initial.id, {
           creative,
-          click_url: clickUrl,
+          click_url: effectiveClickUrl,
           target_segment,
           starts_at: new Date(startsAt).toISOString(),
           ends_at: new Date(endsAt).toISOString(),
-          daily_cap: dc,
           weight: w,
           is_dry_run: dryRun,
-          ...pricingPayload,
         })
       } else {
         if (isBadgeSponsor) {
@@ -347,14 +531,12 @@ export function CampaignEditorModal({
           brand_id: isSuper ? brandId : undefined,
           placement_key: placementKey,
           creative,
-          click_url: clickUrl,
+          click_url: effectiveClickUrl,
           target_segment,
           starts_at: new Date(startsAt).toISOString(),
-          ends_at: new Date(endsAt).toISOString(),
-          daily_cap: dc,
           weight: w,
           is_dry_run: dryRun,
-          ...pricingPayload,
+          duration_months: durationMonths,
           ...(isBadgeSponsor
             ? {
                 badge_spec: {
@@ -365,6 +547,7 @@ export function CampaignEditorModal({
                   threshold: parseInt(badgeThreshold, 10),
                   image_url: effectiveImageUrl,
                   gender: badgeGender,
+                  ...(badgeCriteria ? { criteria: badgeCriteria } : {}),
                 },
               }
             : {}),
@@ -404,29 +587,31 @@ export function CampaignEditorModal({
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 p-5">
           {/* Form */}
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Brand">
-                {isSuper && !isEdit ? (
-                  <select
-                    value={brandId}
-                    onChange={(e) => setBrandId(e.target.value)}
-                    className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm"
-                  >
-                    <option value="">Seç…</option>
-                    {brands.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.display_name}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    value={initial?.brand_name ?? 'Kendi brandiniz'}
-                    disabled
-                    className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm opacity-60"
-                  />
-                )}
-              </Field>
+            <div className={`grid ${isSuper ? 'grid-cols-2' : 'grid-cols-1'} gap-3`}>
+              {isSuper && (
+                <Field label="Brand">
+                  {!isEdit ? (
+                    <select
+                      value={brandId}
+                      onChange={(e) => setBrandId(e.target.value)}
+                      className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm"
+                    >
+                      <option value="">Seç…</option>
+                      {brands.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={initial?.brand_name ?? ''}
+                      disabled
+                      className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm opacity-60"
+                    />
+                  )}
+                </Field>
+              )}
               <Field label="Placement">
                 <select
                   value={placementKey}
@@ -443,67 +628,142 @@ export function CampaignEditorModal({
               </Field>
             </div>
 
-            {/* T0.4 — pricing/budget (super only). brand_admin sees
-                read-only summary if values are set, else nothing. */}
-            {isSuper ? (
-              <div className="grid grid-cols-3 gap-3">
-                <Field label="Pricing model">
-                  <select
-                    value={pricingModel}
-                    onChange={(e) =>
-                      setPricingModel(
-                        e.target.value as 'cpm' | 'cpc' | 'flat' | '',
-                      )
-                    }
-                    className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm"
-                  >
-                    <option value="">— (sözleşme dışı)</option>
-                    <option value="cpm">CPM</option>
-                    <option value="cpc">CPC</option>
-                    <option value="flat">Flat fee</option>
-                  </select>
-                </Field>
-                <Field
-                  label="Unit price (kr)"
-                  hint={pricingModel === 'flat' ? 'flat için boş' : 'cpm/cpc zorunlu'}
-                >
-                  <input
-                    type="number"
-                    min={0}
-                    value={unitPriceCents}
-                    onChange={(e) => setUnitPriceCents(e.target.value)}
-                    disabled={pricingModel === 'flat' || pricingModel === ''}
-                    className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm disabled:opacity-50"
-                  />
-                </Field>
-                <Field
-                  label="Total budget (kr)"
-                  hint="cpm/cpc için zorunlu"
-                >
-                  <input
-                    type="number"
-                    min={0}
-                    value={totalBudgetCents}
-                    onChange={(e) => setTotalBudgetCents(e.target.value)}
-                    disabled={pricingModel === 'flat' || pricingModel === ''}
-                    className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm disabled:opacity-50"
-                  />
-                </Field>
+            {/* Paket: ay-tier + hedef impression. Maliyet (placement,
+                duration) tier fiyatından hesaplanır, 100 TL katına yuvarlanır,
+                brand bakiyesinden anlık düşer. Edit modunda read-only — paket
+                kilitli, "Uzat" ile değişir. */}
+            {isEdit ? (
+              <div className="bg-dark-800 border border-dark-700 rounded-lg p-3 text-xs text-dark-300 space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-dark-400">Paket süresi</span>
+                  <span className="font-mono text-white">
+                    {initial?.duration_months != null
+                      ? `${initial.duration_months} ay`
+                      : '—'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-dark-400">Hedef impression</span>
+                  <span className="font-mono text-white">
+                    {initial?.target_impressions != null
+                      ? initial.target_impressions.toLocaleString()
+                      : '—'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-dark-400">Ödenen tutar</span>
+                  <span className="font-mono text-white">
+                    {initial?.total_budget_cents != null
+                      ? formatTRY(initial.total_budget_cents)
+                      : '—'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-dark-400">Birim fiyat (kayıt anı)</span>
+                  <span className="font-mono text-white">
+                    {initial?.unit_price_cents != null
+                      ? `${formatTRY(initial.unit_price_cents)} / 1k`
+                      : '—'}
+                  </span>
+                </div>
+                <p className="text-dark-500 text-[11px] pt-1">
+                  Paketteki süre/hedef değiştirilemez. Eklemek için detay
+                  sayfasındaki <strong>Uzat</strong> butonunu kullanın.
+                </p>
               </div>
             ) : (
-              initial?.pricing_model && (
-                <div className="bg-dark-800 border border-dark-700 rounded-lg p-3 text-xs text-dark-300">
-                  Pricing: <strong>{initial.pricing_model.toUpperCase()}</strong>
-                  {initial.unit_price_cents !== null &&
-                    ` · ${initial.unit_price_cents}kr`}
-                  {initial.total_budget_cents !== null &&
-                    ` · bütçe ${initial.total_budget_cents.toLocaleString()}kr`}
-                  <div className="text-dark-500 mt-1 text-[11px]">
-                    Bu alanlar sözleşme alanıdır; sadece super_admin
-                    güncelleyebilir.
-                  </div>
+              <div className="bg-dark-800 border border-dark-700 rounded-lg p-3 space-y-3">
+                <div className="text-xs text-dark-400 font-medium">
+                  Paket seçimi
                 </div>
-              )
+
+                <div className="grid grid-cols-2 gap-2">
+                  {DURATION_MONTH_OPTIONS.map((m) => {
+                    const tier = placementTiers.find(
+                      (p) => p.duration_months === m,
+                    )
+                    const tierTotal = tier
+                      ? cpmCostCents(tier.included_impressions, tier.unit_price_cents)
+                      : null
+                    const selected = durationMonths === m
+                    const disabled = tier == null
+                    return (
+                      <button
+                        key={m}
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => setDurationMonths(m)}
+                        className={`text-left rounded-lg border p-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                          selected
+                            ? 'bg-neon-500/15 border-neon-500/40'
+                            : 'bg-dark-900 border-dark-700 hover:border-dark-500'
+                        }`}
+                      >
+                        <div className="text-[11px] uppercase tracking-wider text-dark-400">
+                          {m} ay paketi
+                        </div>
+                        {tier ? (
+                          <>
+                            <div className="text-lg font-bold text-white font-mono mt-1">
+                              {tierTotal != null ? formatTRY(tierTotal) : '—'}
+                            </div>
+                            <div className="text-[10px] text-dark-400 font-mono">
+                              {tier.included_impressions.toLocaleString()} imp
+                            </div>
+                            <div className="text-[10px] text-dark-500 font-mono">
+                              CPM {formatTRY(tier.unit_price_cents)} / 1k
+                            </div>
+                          </>
+                        ) : (
+                          <div className="text-[10px] text-dark-500 mt-1">
+                            Paket tanımsız
+                          </div>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                <div className="border-t border-dark-700 pt-2 space-y-1">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-dark-400">Paket toplam fiyatı</span>
+                    <span className="font-mono text-white">
+                      {costPreviewCents != null
+                        ? formatTRY(costPreviewCents)
+                        : '—'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-dark-400">Brand bakiyesi</span>
+                    <span
+                      className={`font-mono ${
+                        insufficientBalance ? 'text-red-400' : 'text-white'
+                      }`}
+                    >
+                      {walletBalanceCents != null
+                        ? formatTRY(walletBalanceCents)
+                        : '—'}
+                    </span>
+                  </div>
+                  {insufficientBalance && walletBalanceCents != null && costPreviewCents != null && (
+                    <p className="text-[11px] text-red-400">
+                      ⚠ Yetersiz bakiye —{' '}
+                      {formatTRY(costPreviewCents - walletBalanceCents)} daha gerek.
+                      {!isSuper && ' Platform operatörüyle iletişime geçin.'}
+                    </p>
+                  )}
+                  {activeTier == null && (
+                    <p className="text-[11px] text-yellow-400">
+                      ⚠ Bu tier için paket tanımlı değil. Super_admin Placements
+                      → Fiyatlandırma'dan ekleyebilir.
+                    </p>
+                  )}
+                  <p className="text-[10px] text-dark-500 pt-1">
+                    Brand tier paketini satın alır. İhtiyaç fazlası gelirse "Uzat"
+                    ile aynı CPM oranından ek impression eklenebilir.
+                  </p>
+                </div>
+              </div>
             )}
 
             {placement && !placement.is_globally_enabled && (
@@ -641,15 +901,41 @@ export function CampaignEditorModal({
 
                     {badgeVisualMode === 'icon' ? (
                       <div className="flex items-center gap-3">
-                        <input
-                          value={badgeIcon}
-                          onChange={(e) => setBadgeIcon(e.target.value)}
-                          maxLength={10}
-                          placeholder="🐝"
-                          className="w-24 bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-center text-lg"
-                        />
+                        <div className="relative" ref={badgeEmojiRef}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setShowBadgeEmojiPicker((v) => !v)
+                            }
+                            className="w-24 h-12 bg-dark-900 border border-dark-600 rounded-lg flex items-center justify-center gap-2 cursor-pointer hover:bg-dark-800"
+                          >
+                            {badgeIcon ? (
+                              <span className="text-2xl">{badgeIcon}</span>
+                            ) : (
+                              <>
+                                <Smile size={16} className="text-dark-500" />
+                                <span className="text-xs text-dark-500">
+                                  Seç
+                                </span>
+                              </>
+                            )}
+                          </button>
+                          {showBadgeEmojiPicker && (
+                            <div className="absolute top-full left-0 mt-1 z-50">
+                              <EmojiPicker
+                                theme={Theme.DARK}
+                                onEmojiClick={(e) => {
+                                  setBadgeIcon(e.emoji)
+                                  setShowBadgeEmojiPicker(false)
+                                }}
+                                width={320}
+                                height={400}
+                              />
+                            </div>
+                          )}
+                        </div>
                         <span className="text-xs text-dark-500">
-                          Tek emoji veya kısa unicode (≤10 karakter).
+                          Emoji picker'dan seç veya yapıştır (≤10 karakter).
                         </span>
                       </div>
                     ) : (
@@ -658,43 +944,49 @@ export function CampaignEditorModal({
                           <img
                             src={badgeImageUrl}
                             alt="Badge görseli"
-                            className="w-16 h-16 rounded-full object-cover ring-2 ring-neon-500/30"
+                            className="w-16 h-16 rounded-full object-contain bg-dark-900 ring-2 ring-neon-500/30"
                           />
                         ) : (
-                          <div className="w-16 h-16 rounded-full bg-dark-900 border border-dark-700 flex items-center justify-center text-dark-600 text-xs">
+                          <div className="w-16 h-16 rounded-full bg-dark-900 border border-dark-700 flex items-center justify-center text-dark-600 text-[10px] text-center px-1">
                             önizleme
                           </div>
                         )}
                         <div className="flex-1">
-                          <input
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp"
-                            disabled={badgeImageUploading}
-                            onChange={async (e) => {
-                              const f = e.target.files?.[0]
-                              if (!f) return
-                              setBadgeImageUploading(true)
-                              setError(null)
-                              try {
-                                const r = await adminApi.uploadAdCreative(f)
-                                setBadgeImageUrl(r.url)
-                              } catch (err) {
-                                setError(
-                                  err instanceof Error
-                                    ? err.message
-                                    : 'Upload failed',
-                                )
-                              } finally {
-                                setBadgeImageUploading(false)
-                                // Reset input so same file can be reselected
-                                e.target.value = ''
-                              }
-                            }}
-                            className="text-xs"
-                          />
-                          <p className="text-[11px] text-dark-500 mt-1">
-                            Önerilen 256×256, kare PNG.{' '}
-                            {badgeImageUploading && 'Yükleniyor…'}
+                          <label className="inline-flex items-center gap-2 px-3 py-2 bg-dark-700 border border-dark-600 rounded-lg text-dark-200 hover:bg-dark-600 transition-colors cursor-pointer text-xs font-medium">
+                            <Upload size={14} />
+                            {badgeImageUploading
+                              ? 'Yükleniyor…'
+                              : badgeImageUrl
+                                ? 'Değiştir'
+                                : 'PNG seç'}
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/webp"
+                              disabled={badgeImageUploading}
+                              onChange={async (e) => {
+                                const f = e.target.files?.[0]
+                                if (!f) return
+                                setBadgeImageUploading(true)
+                                setError(null)
+                                try {
+                                  const r = await adminApi.uploadAdCreative(f)
+                                  setBadgeImageUrl(r.url)
+                                } catch (err) {
+                                  setError(
+                                    err instanceof Error
+                                      ? err.message
+                                      : 'Upload failed',
+                                  )
+                                } finally {
+                                  setBadgeImageUploading(false)
+                                  e.target.value = ''
+                                }
+                              }}
+                              className="hidden"
+                            />
+                          </label>
+                          <p className="text-[11px] text-dark-500 mt-1.5">
+                            Önerilen 256×256, kare PNG / JPG / WebP.
                           </p>
                           {badgeImageUrl && (
                             <button
@@ -709,6 +1001,14 @@ export function CampaignEditorModal({
                       </div>
                     )}
                   </div>
+
+                  {/* Zengin kriterler (opsiyonel). Verilirse unlock evaluator
+                      bu spec'i değerlendirir; legacy category/threshold yolu
+                      yedek kalır. */}
+                  <BadgeCriteriaBuilder
+                    value={badgeCriteria}
+                    onChange={setBadgeCriteria}
+                  />
                 </div>
               </div>
             )}
@@ -736,15 +1036,22 @@ export function CampaignEditorModal({
               </div>
             </div>
 
-            <Field label="Click URL">
-              <input
-                type="url"
-                value={clickUrl}
-                onChange={(e) => setClickUrl(e.target.value)}
-                placeholder="https://brand.com/landing"
-                className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm"
-              />
-            </Field>
+            {/* forum_thread için click URL anlamsız — kullanıcı thread
+                detayına gider. gated_interstitial için de tıklama yok —
+                gate yalnızca date submit'i ilerletir. Diğer placement'lar
+                için affiliate-aware URL input. */}
+            {!isForumThread && !isGatedInterstitial && (
+              <Field
+                label="Click URL"
+                hint="Elle URL girin veya sağdaki butonla affiliate link'lerinizden seçin."
+              >
+                <UrlWithAffiliatePicker
+                  value={clickUrl}
+                  onChange={setClickUrl}
+                  placeholder="https://brand.com/landing"
+                />
+              </Field>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <Field label="Başlangıç">
@@ -755,41 +1062,36 @@ export function CampaignEditorModal({
                   className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm scheme-dark"
                 />
               </Field>
-              <Field label="Bitiş">
+              <Field
+                label="Bitiş"
+                hint={
+                  !isEdit
+                    ? `Başlangıç + ${durationMonths} ay otomatik hesaplandı`
+                    : undefined
+                }
+              >
                 <input
                   type="datetime-local"
                   value={endsAt}
                   onChange={(e) => setEndsAt(e.target.value)}
-                  className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm scheme-dark"
+                  disabled={!isEdit}
+                  className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm scheme-dark disabled:opacity-60"
                 />
               </Field>
             </div>
 
-            {/* daily_cap + weight: rotation-bazlı placement'larda anlamlı.
-                badge_sponsor'da impression/rotation yok — kafa karışıklığını
-                önlemek için form'dan tamamen gizli. */}
+            {/* Weight: aynı placement'ta birden fazla aktif kampanya
+                varsa rotasyon ağırlığı. badge_sponsor'da rotation yok. */}
             {!isBadgeSponsor && (
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Daily cap" hint="Günlük impression limiti, boş = sınırsız">
-                  <input
-                    type="number"
-                    min={1}
-                    value={dailyCap}
-                    onChange={(e) => setDailyCap(e.target.value)}
-                    placeholder="örn. 5000"
-                    className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm"
-                  />
-                </Field>
-                <Field label="Weight" hint="Aynı placement içinde rotasyon ağırlığı">
-                  <input
-                    type="number"
-                    min={1}
-                    value={weight}
-                    onChange={(e) => setWeight(e.target.value)}
-                    className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm"
-                  />
-                </Field>
-              </div>
+              <Field label="Weight" hint="Aynı placement içinde rotasyon ağırlığı">
+                <input
+                  type="number"
+                  min={1}
+                  value={weight}
+                  onChange={(e) => setWeight(e.target.value)}
+                  className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm"
+                />
+              </Field>
             )}
 
             {/* Targeting: badge unlock hedeflenmez (threshold'u sağlayan
@@ -976,7 +1278,30 @@ export function CampaignEditorModal({
             <div className="bg-dark-950 border border-dark-700 rounded-xl p-4">
               <PlacementPreview
                 placementKey={placementKey}
-                creative={creative as PreviewCreative}
+                creative={
+                  // badge_sponsor için badge state'ini PreviewCreative'e
+                  // çeviriyoruz — `creative` JSON'u boş, gerçek görsel
+                  // alanları ayrı state'te tutuluyor.
+                  isBadgeSponsor
+                    ? ({
+                        title: badgeName || initial?.brand_name,
+                        body: badgeDescription,
+                        icon:
+                          badgeVisualMode === 'icon'
+                            ? badgeIcon
+                            : undefined,
+                        image_url:
+                          badgeVisualMode === 'image' && badgeImageUrl
+                            ? badgeImageUrl
+                            : undefined,
+                        sponsor_name:
+                          initial?.brand_name ??
+                          brands.find((b) => b.id === brandId)?.display_name ??
+                          me?.brand?.display_name ??
+                          me?.impersonating_brand?.display_name,
+                      } satisfies PreviewCreative)
+                    : (creative as PreviewCreative)
+                }
                 viewport={viewport}
               />
             </div>
@@ -1009,10 +1334,26 @@ export function CampaignEditorModal({
           </button>
           <button
             onClick={onSave}
-            disabled={saving}
-            className="px-4 py-2 bg-neon-500/20 text-neon-400 border border-neon-500/30 rounded-lg text-sm font-medium hover:bg-neon-500/30 disabled:opacity-50"
+            disabled={
+              saving ||
+              uploadingField !== null ||
+              badgeImageUploading ||
+              (!isEdit && insufficientBalance)
+            }
+            title={
+              uploadingField || badgeImageUploading
+                ? 'Görsel yüklenirken kaydedilemez'
+                : undefined
+            }
+            className="px-4 py-2 bg-neon-500/20 text-neon-400 border border-neon-500/30 rounded-lg text-sm font-medium hover:bg-neon-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {saving ? 'Kaydediliyor…' : isEdit ? 'Kaydet' : 'Oluştur'}
+            {saving
+              ? 'Kaydediliyor…'
+              : uploadingField || badgeImageUploading
+                ? 'Görsel yükleniyor…'
+                : isEdit
+                  ? 'Kaydet'
+                  : 'Oluştur'}
           </button>
         </div>
       </div>
@@ -1055,20 +1396,114 @@ function CreativeFieldInput({
   onUpload: (file: File) => void
   uploading: boolean
 }) {
-  const label = field.fieldName as string
-  const hint =
+  const fieldKey = field.fieldName as string
+  const label = labelForField(fieldKey)
+  const description = hintForField(fieldKey)
+  const [durationError, setDurationError] = useState<string | null>(null)
+  const meta =
     field.kind === 'image'
-      ? `Önerilen boyut: ${field.sizeHint}`
-      : field.maxLength
-        ? `${[...value].length}/${field.maxLength} karakter`
-        : undefined
+      ? `Önerilen boyut: ${field.sizeHint}${field.optional ? ' · opsiyonel' : ''}`
+      : field.kind === 'video'
+        ? `Maks ${field.maxSeconds}s${field.optional ? ' · opsiyonel' : ''}`
+        : field.maxLength
+          ? `${[...value].length}/${field.maxLength} karakter`
+          : undefined
+
+  // Video upload: süreyi <video>.duration üzerinden kontrol et,
+  // limit aşılırsa hiç yüklemeye gitme.
+  const handleVideoFile = (file: File) => {
+    setDurationError(null)
+    const maxSec = field.maxSeconds ?? 0
+    if (maxSec <= 0) {
+      onUpload(file)
+      return
+    }
+    const url = URL.createObjectURL(file)
+    const probe = document.createElement('video')
+    probe.preload = 'metadata'
+    probe.onloadedmetadata = () => {
+      const seconds = probe.duration
+      URL.revokeObjectURL(url)
+      if (!Number.isFinite(seconds)) {
+        setDurationError('Video süresi okunamadı — dosyayı kontrol edin')
+        return
+      }
+      if (seconds > maxSec + 0.5) {
+        setDurationError(
+          `Video ${seconds.toFixed(1)}s — maksimum ${maxSec}s olabilir`,
+        )
+        return
+      }
+      onUpload(file)
+    }
+    probe.onerror = () => {
+      URL.revokeObjectURL(url)
+      setDurationError('Video açılamadı — desteklenen format MP4/WebM')
+    }
+    probe.src = url
+  }
+
+  if (field.kind === 'video') {
+    return (
+      <div>
+        <div className="flex items-center justify-between text-[11px] text-dark-400 mb-1.5">
+          <span className="font-medium">{label}</span>
+          <span>{meta}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          {value ? (
+            <>
+              <video
+                src={value}
+                className="h-16 rounded border border-dark-700 bg-dark-950"
+                muted
+                playsInline
+                controls
+              />
+              <button
+                onClick={() => {
+                  onChange('')
+                  setDurationError(null)
+                }}
+                className="text-xs text-red-400 hover:text-red-300"
+              >
+                Kaldır
+              </button>
+            </>
+          ) : (
+            <span className="text-xs text-dark-500">Henüz video yok</span>
+          )}
+          <label className="ml-auto inline-flex items-center gap-2 px-3 py-1.5 bg-dark-700 border border-dark-600 rounded-lg text-xs cursor-pointer hover:bg-dark-600">
+            <Upload size={12} />
+            {uploading ? 'Yükleniyor…' : 'Yükle'}
+            <input
+              type="file"
+              accept="video/mp4,video/webm"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                e.target.value = ''
+                if (f) handleVideoFile(f)
+              }}
+            />
+          </label>
+        </div>
+        {durationError && (
+          <p className="text-[10px] text-red-400 mt-1">{durationError}</p>
+        )}
+        {description && !durationError && (
+          <p className="text-[10px] text-dark-500 mt-1">{description}</p>
+        )}
+      </div>
+    )
+  }
 
   if (field.kind === 'image') {
     return (
       <div>
         <div className="flex items-center justify-between text-[11px] text-dark-400 mb-1.5">
-          <span className="font-mono">{label}</span>
-          <span>{hint}</span>
+          <span className="font-medium">{label}</span>
+          <span>{meta}</span>
         </div>
         <div className="flex items-center gap-3">
           {value ? (
@@ -1110,7 +1545,7 @@ function CreativeFieldInput({
   return (
     <div>
       <div className="flex items-center justify-between text-[11px] text-dark-400 mb-1.5">
-        <span className="font-mono">{label}</span>
+        <span className="font-medium">{label}</span>
         <span
           className={
             field.maxLength && [...value].length > field.maxLength
@@ -1118,7 +1553,7 @@ function CreativeFieldInput({
               : ''
           }
         >
-          {hint}
+          {meta}
         </span>
       </div>
       {field.kind === 'textarea' ? (
@@ -1136,6 +1571,9 @@ function CreativeFieldInput({
           maxLength={field.maxLength ?? 200}
           className="w-full bg-dark-900 border border-dark-600 rounded px-2 py-1.5 text-sm"
         />
+      )}
+      {description && (
+        <p className="text-[10px] text-dark-500 mt-1">{description}</p>
       )}
     </div>
   )

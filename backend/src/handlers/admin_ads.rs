@@ -29,7 +29,7 @@
 // user-tied data. Aggregate metrics come from ad_metrics /
 // ad_placement_metrics which are anonymous by design.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
@@ -69,33 +69,17 @@ pub fn router() -> Router<AppState> {
         .route("/campaigns/{id}/approve", post(approve_campaign))
         .route("/campaigns/{id}/reject", post(reject_campaign))
         .route("/campaigns/{id}/resume", post(resume_campaign))
+        // Campaign extension (target + ends_at) — wallet flow
+        .route("/campaigns/{id}/extend", post(extend_campaign))
         // Audit log
         .route("/audit", get(list_audit_log))
-        // Creative upload
-        .route("/upload-creative", post(upload_creative))
-        // T0.4 — manual budget aggregator trigger (super only)
-        .route("/jobs/budget-aggregator/run", post(run_budget_aggregator))
-}
-
-async fn run_budget_aggregator(
-    State(state): State<AppState>,
-    ctx: AdminContext,
-) -> Result<Json<Value>, AppError> {
-    ctx.require_super()?;
-    ctx.require_password_changed()?;
-    let mut redis = state.redis.clone();
-    let summary = crate::services::budget_aggregator::run_once(&state.db, &mut redis)
-        .await
-        .map_err(AppError::Sqlx)?;
-    Ok(Json(json!({
-        "success": true,
-        "data": {
-            "processed": summary.processed,
-            "auto_paused": summary.auto_paused,
-            "alerts_fired": summary.alerts_fired,
-        },
-        "error": null
-    })))
+        // Creative upload — gövde limiti video için 50MB'a yükseltildi
+        // (Axum default 2MB). MIME ve dosya boyutu detayı
+        // upload_creative içinde tekrar doğrulanır.
+        .route(
+            "/upload-creative",
+            post(upload_creative).layer(DefaultBodyLimit::max(60 * 1024 * 1024)),
+        )
 }
 
 // ── Audit log helper (kept for cross-module reuse) ────────────
@@ -152,6 +136,28 @@ fn validate_creative(spec: &Value, creative: &Value) -> Result<(), AppError> {
                 }
             }
         }
+        // Spec'te `image_size` / `logo_size` vb. bir görsel beklendiğini
+        // söylüyorsa karşılığı `image_url` / `logo_url` zorunlu. UI tarafı
+        // bunu zorluyor; backend de defense-in-depth olarak doğrular,
+        // böylece image_url'siz creative DB'ye düşmez.
+        // `_size_optional` suffix'i ise alanı tanımlar (UI yine yükleme
+        // kutusu çıkarır) ama zorunluluk koymaz.
+        if spec_key.ends_with("_size_optional") {
+            continue;
+        }
+        if let Some(base) = spec_key.strip_suffix("_size") {
+            let url_field = format!("{base}_url");
+            let url_set = creative_obj
+                .get(&url_field)
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !url_set {
+                return Err(AppError::BadRequest(format!(
+                    "creative.{url_field} zorunlu — bu placement için görsel gerekli"
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -195,6 +201,10 @@ fn validate_badge_spec(spec: &BadgeSpec) -> Result<(), AppError> {
             ));
         }
     }
+    if let Some(c) = &spec.criteria {
+        crate::services::badge_criteria::validate_criteria(c)
+            .map_err(|e| AppError::BadRequest(format!("badge criteria: {e}")))?;
+    }
     Ok(())
 }
 
@@ -212,6 +222,93 @@ async fn sync_badge_status_from_campaign(
     .bind(new_status)
     .execute(db)
     .await;
+}
+
+/// placement_key='forum_thread' olan kampanyalar için, onaylandığında
+/// forum_topics tablosuna gerçek bir satır yazar. Pin'li ve
+/// sponsor_campaign_id ile bu kampanyaya bağlı. Idempotent: aynı
+/// campaign_id için ikinci kez çağrılırsa hiçbir şey yapmaz.
+///
+/// Diğer placement'larda no-op.
+async fn ensure_sponsored_forum_topic(db: &sqlx::PgPool, campaign_id: Uuid) {
+    use sqlx::Row;
+    let row: Option<(String, Value)> = match sqlx::query_as(
+        "SELECT placement_key, creative FROM ad_campaigns WHERE id = $1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(db)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(?campaign_id, error = %e, "ensure_sponsored_forum_topic: campaign fetch failed");
+            return;
+        }
+    };
+
+    let Some((placement_key, creative)) = row else { return };
+    if placement_key != "forum_thread" {
+        return;
+    }
+
+    // Aynı kampanya için topic zaten varsa atla.
+    let existing: Result<Option<sqlx::postgres::PgRow>, _> = sqlx::query(
+        "SELECT id FROM forum_topics WHERE sponsor_campaign_id = $1 LIMIT 1",
+    )
+    .bind(campaign_id)
+    .fetch_optional(db)
+    .await;
+    if let Ok(Some(_)) = existing {
+        return;
+    }
+
+    let title = creative
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Sponsored discussion")
+        .to_string();
+    let body = creative
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let image_url = creative
+        .get("image_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // category='general' — sponsorlu thread'ler için varsayılan
+    // bucket. Operatör isterse PATCH ile değiştirir.
+    let insert = sqlx::query(
+        r#"
+        INSERT INTO forum_topics
+            (user_id, title, body, category, is_anonymous, is_pinned,
+             image_url, sponsor_campaign_id)
+        VALUES (NULL, $1, $2, 'general', FALSE, TRUE, $3, $4)
+        RETURNING id
+        "#,
+    )
+    .bind(&title)
+    .bind(&body)
+    .bind(image_url.as_deref())
+    .bind(campaign_id)
+    .fetch_optional(db)
+    .await;
+
+    match insert {
+        Ok(Some(r)) => {
+            let topic_id: Uuid = r.get("id");
+            tracing::info!(
+                ?campaign_id,
+                ?topic_id,
+                "ensure_sponsored_forum_topic: created sponsored topic"
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!(?campaign_id, error = %e, "ensure_sponsored_forum_topic: insert failed");
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -660,7 +757,6 @@ struct CampaignRow {
     target_segment: Option<Value>,
     starts_at: DateTime<Utc>,
     ends_at: DateTime<Utc>,
-    daily_cap: Option<i32>,
     weight: i32,
     status: String,
     is_active: bool,
@@ -669,6 +765,8 @@ struct CampaignRow {
     pricing_model: Option<String>,
     unit_price_cents: Option<i32>,
     total_budget_cents: Option<i64>,
+    target_impressions: Option<i32>,
+    duration_months: Option<i16>,
     spent_cents: i64,
     paused_reason: Option<String>,
     created_at: DateTime<Utc>,
@@ -692,7 +790,6 @@ fn campaign_row_to_json(r: CampaignRow) -> Value {
         "target_segment": r.target_segment,
         "starts_at": r.starts_at,
         "ends_at": r.ends_at,
-        "daily_cap": r.daily_cap,
         "weight": r.weight,
         "status": r.status,
         "is_active": r.is_active,
@@ -701,6 +798,8 @@ fn campaign_row_to_json(r: CampaignRow) -> Value {
         "pricing_model": r.pricing_model,
         "unit_price_cents": r.unit_price_cents,
         "total_budget_cents": r.total_budget_cents,
+        "target_impressions": r.target_impressions,
+        "duration_months": r.duration_months,
         "spent_cents": r.spent_cents,
         "progress_percent": progress,
         "paused_reason": r.paused_reason,
@@ -748,9 +847,10 @@ async fn list_campaigns(
         r#"
         SELECT
             c.id, c.brand_id, c.brand_name, c.placement_key, c.creative, c.click_url,
-            c.target_segment, c.starts_at, c.ends_at, c.daily_cap, c.weight,
+            c.target_segment, c.starts_at, c.ends_at, c.weight,
             c.status, c.is_active, c.is_dry_run, c.deleted_at,
             c.pricing_model, c.unit_price_cents, c.total_budget_cents,
+            c.target_impressions, c.duration_months,
             c.spent_cents, c.paused_reason,
             c.created_at, c.updated_at,
             COALESCE((SELECT SUM(impressions) FROM ad_metrics m WHERE m.campaign_id = c.id), 0)::bigint AS impressions_total,
@@ -785,18 +885,68 @@ struct CreateCampaignBody {
     click_url: String,
     target_segment: Option<Value>,
     starts_at: DateTime<Utc>,
-    ends_at: DateTime<Utc>,
-    daily_cap: Option<i32>,
     weight: Option<i32>,
     is_dry_run: Option<bool>,
-    // T0.4 pricing/budget fields — super only; ignored from brand_admin body
-    pricing_model: Option<String>,
-    unit_price_cents: Option<i32>,
-    total_budget_cents: Option<i64>,
+    /// Paket tier'i (1/3/6/12). Süre, included impression sayısı ve birim
+    /// fiyat hep bu seçimden gelir; brand serbest impression girişi yapamaz.
+    duration_months: i16,
     /// placement_key='badge_sponsor' için zorunlu. Brand kendi badge'ini
     /// tasarlar; super onayladığında `badges` tablosuna yazılır,
     /// kampanya statüsüyle senkronize çalışır.
     badge_spec: Option<BadgeSpec>,
+}
+
+/// 100 TL katına yukarı yuvarla (10000 kuruş). Pozitif input bekler.
+fn round_up_to_100_tl(cents: i64) -> i64 {
+    let unit: i64 = 10_000;
+    if cents <= 0 {
+        return 0;
+    }
+    ((cents + unit - 1) / unit) * unit
+}
+
+/// CPM cost'unu yukarı yuvarlamayla hesapla:
+/// `ceil(impressions * unit_price_cents / 1000)`. Pozitif input bekler.
+fn ceil_div_1000(numerator: i64) -> i64 {
+    (numerator + 999) / 1000
+}
+
+/// (placement, duration_months) tier'inin aktif paket tanımı:
+/// `(unit_price_cents, included_impressions)`. Brand'in seçtiği tier
+/// = bu paket; cost = bundle'ın yuvarlanmış toplam fiyatı.
+async fn lookup_active_tier_bundle(
+    db: &PgPool,
+    placement_key: &str,
+    duration_months: i16,
+) -> Result<(i32, i32), AppError> {
+    let row: Option<(i32, i32)> = sqlx::query_as(
+        r#"
+        SELECT unit_price_cents, included_impressions
+        FROM placement_pricing
+        WHERE placement_key = $1
+          AND pricing_model = 'cpm'
+          AND duration_months = $2
+          AND effective_to IS NULL
+        "#,
+    )
+    .bind(placement_key)
+    .bind(duration_months)
+    .fetch_optional(db)
+    .await?;
+    row.ok_or_else(|| {
+        AppError::BadRequest(format!(
+            "no active pricing tier for placement '{placement_key}' \
+             at duration_months={duration_months}"
+        ))
+    })
+}
+
+fn actor_label_for(ctx: &AdminContext) -> String {
+    match (ctx.admin_user_id, ctx.actor_name.as_deref()) {
+        (Some(uid), _) => format!("admin_user:{uid}"),
+        (None, Some(name)) => format!("env_super:{name}"),
+        (None, None) => "env_super".to_string(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -808,6 +958,11 @@ struct BadgeSpec {
     threshold: i32,
     image_url: Option<String>,
     gender: Option<String>,
+    /// Opsiyonel zengin kriter spec'i. Verilirse evaluator unlock kararını
+    /// bu spec'ten verir; legacy category/threshold yolu kullanılmaz.
+    /// Boş veya tanımsız ise (mevcut platform badge mantığı gibi)
+    /// category/threshold üzerinden değerlendirilir.
+    criteria: Option<crate::services::badge_criteria::BadgeCriteria>,
 }
 
 async fn create_campaign(
@@ -817,16 +972,18 @@ async fn create_campaign(
 ) -> Result<Json<Value>, AppError> {
     ctx.require_password_changed()?;
 
-    if body.ends_at <= body.starts_at {
+    if !crate::handlers::admin_pricing::is_allowed_duration(body.duration_months) {
         return Err(AppError::BadRequest(
-            "ends_at must be strictly after starts_at".to_string(),
+            "duration_months_must_be_1_3_6_or_12".to_string(),
         ));
     }
-    if let Some(cap) = body.daily_cap {
-        if cap <= 0 {
-            return Err(AppError::BadRequest("daily_cap must be > 0".to_string()));
-        }
-    }
+
+    // ends_at = starts_at + duration_months (takvim-bilinçli).
+    let ends_at = body
+        .starts_at
+        .checked_add_months(chrono::Months::new(body.duration_months as u32))
+        .ok_or_else(|| AppError::BadRequest("ends_at overflow".to_string()))?;
+
     let weight = body.weight.unwrap_or(1);
     if weight < 1 {
         return Err(AppError::BadRequest("weight must be >= 1".to_string()));
@@ -878,19 +1035,17 @@ async fn create_campaign(
         })?;
     validate_creative(&spec, &body.creative)?;
 
-    // T0.4 pricing/budget — only super may set these. brand_admin
-    // request body fields are silently dropped (server-side authority).
-    let is_super = ctx.effective_role() == AdminRole::Super;
-    let (pricing_model, unit_price_cents, total_budget_cents) = if is_super {
-        validate_pricing(&body.pricing_model, body.unit_price_cents, body.total_budget_cents)?;
-        (
-            body.pricing_model.clone(),
-            body.unit_price_cents,
-            body.total_budget_cents,
-        )
-    } else {
-        (None, None, None)
-    };
+    // Tier paketini oku — included impression sayısı ve CPM birim fiyatı bundan.
+    // Server-side authority — brand body'sinden impression/fiyat geçirmez.
+    let (unit_price_cents, included_impressions) = lookup_active_tier_bundle(
+        &state.db,
+        &body.placement_key,
+        body.duration_months,
+    )
+    .await?;
+    let raw_cost: i64 =
+        ceil_div_1000(included_impressions as i64 * unit_price_cents as i64);
+    let cost_cents = round_up_to_100_tl(raw_cost);
 
     // badge_sponsor: brand kendi badge'ini tasarlar; transaction içinde
     // hem ad_campaigns hem badges satırı yaratılır, badge campaign'in
@@ -902,28 +1057,74 @@ async fn create_campaign(
             )
         })?;
         validate_badge_spec(spec)?;
-        // Sponsor logosu artık yok — brand badge'in kendi görseli zaten
-        // brand'a ait, "Sponsored by <brand>" text'i tek başına yeterli.
         Some(spec)
     } else {
         None
     };
 
-    // T0.1 — every new campaign starts as 'draft'
     let id = Uuid::now_v7();
-
     let mut tx = state.db.begin().await?;
+
+    // ── Balance check + deduct (atomic) ──────────────────────
+    let current_balance: Option<i64> = sqlx::query_scalar(
+        "SELECT balance_cents FROM brands WHERE id = $1 FOR UPDATE",
+    )
+    .bind(effective_brand_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let current_balance = current_balance.ok_or_else(|| {
+        AppError::NotFound(format!("brand {effective_brand_id} not found"))
+    })?;
+
+    if current_balance < cost_cents {
+        return Err(AppError::BadRequest(format!(
+            "insufficient_balance: need {} cents, have {}",
+            cost_cents, current_balance
+        )));
+    }
+
+    let new_balance = current_balance - cost_cents;
+    sqlx::query("UPDATE brands SET balance_cents = $1, updated_at = NOW() WHERE id = $2")
+        .bind(new_balance)
+        .bind(effective_brand_id)
+        .execute(&mut *tx)
+        .await?;
+
+    let actor = actor_label_for(&ctx);
+    sqlx::query(
+        r#"
+        INSERT INTO brand_wallet_transactions
+            (brand_id, kind, amount_cents, balance_after_cents,
+             ref_kind, ref_id, description,
+             admin_user_id, actor_label, impersonating_brand_id)
+        VALUES ($1, 'purchase', $2, $3, 'campaign', $4, $5, $6, $7, $8)
+        "#,
+    )
+    .bind(effective_brand_id)
+    .bind(-cost_cents)
+    .bind(new_balance)
+    .bind(id)
+    .bind(format!(
+        "{}-month tier package: {} impressions @ {} cents/1k",
+        body.duration_months, included_impressions, unit_price_cents
+    ))
+    .bind(ctx.admin_user_id)
+    .bind(&actor)
+    .bind(ctx.impersonating_brand_id)
+    .execute(&mut *tx)
+    .await?;
 
     sqlx::query(
         r#"
         INSERT INTO ad_campaigns
             (id, brand_id, brand_name, placement_key, creative, click_url,
-             target_segment, starts_at, ends_at, daily_cap, weight,
+             target_segment, starts_at, ends_at, weight,
              is_active, is_dry_run, status,
-             pricing_model, unit_price_cents, total_budget_cents)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                FALSE, $12, 'draft',
-                $13, $14, $15)
+             pricing_model, unit_price_cents, total_budget_cents,
+             target_impressions, duration_months)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                FALSE, $11, 'pending_review',
+                'cpm', $12, $13, $14, $15)
         "#,
     )
     .bind(id)
@@ -934,28 +1135,38 @@ async fn create_campaign(
     .bind(&body.click_url)
     .bind(body.target_segment.as_ref())
     .bind(body.starts_at)
-    .bind(body.ends_at)
-    .bind(body.daily_cap)
+    .bind(ends_at)
     .bind(weight)
     .bind(body.is_dry_run.unwrap_or(false))
-    .bind(pricing_model.as_deref())
     .bind(unit_price_cents)
-    .bind(total_budget_cents)
+    .bind(cost_cents)
+    .bind(included_impressions)
+    .bind(body.duration_months)
     .execute(&mut *tx)
     .await?;
 
     if let Some(spec) = badge_spec {
         // tier='premium' brand badge'lere otomatik atanır — sözleşmenin
         // görsel ayrıcalığı bu kolonla taşınır, brand seçim yapamaz.
+        // criteria JSONB: spec.criteria varsa serialize edip yazılır;
+        // unlock check'i evaluator'a düşer (category/threshold legacy fallback).
+        let criteria_json = spec
+            .criteria
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|e| {
+                AppError::Internal(format!("badge criteria serialize: {e}"))
+            })?;
         sqlx::query(
             r#"
             INSERT INTO badges
                 (name, description, icon, category, threshold, image_url,
                  gender, is_sponsored, sponsor_name, sponsor_logo_url,
-                 sponsor_click_url, brand_id, campaign_id, status, tier)
+                 sponsor_click_url, brand_id, campaign_id, status, tier, criteria)
             VALUES ($1, $2, $3, $4, $5, $6,
                     COALESCE($7, 'both'), TRUE, $8, NULL,
-                    $9, $10, $11, 'draft', 'premium')
+                    $9, $10, $11, 'draft', 'premium', $12)
             "#,
         )
         .bind(&spec.name)
@@ -969,6 +1180,7 @@ async fn create_campaign(
         .bind(&body.click_url)
         .bind(effective_brand_id)
         .bind(id)
+        .bind(criteria_json)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -1055,7 +1267,6 @@ struct UpdateCampaignBody {
     target_segment: Option<Option<Value>>,
     starts_at: Option<DateTime<Utc>>,
     ends_at: Option<DateTime<Utc>>,
-    daily_cap: Option<Option<i32>>,
     weight: Option<i32>,
     is_dry_run: Option<bool>,
     // T0.4 — super only; silently dropped from brand_admin body
@@ -1130,12 +1341,11 @@ async fn update_campaign(
             target_segment = CASE WHEN $4::boolean THEN $5 ELSE target_segment END,
             starts_at      = COALESCE($6, starts_at),
             ends_at        = COALESCE($7, ends_at),
-            daily_cap      = CASE WHEN $8::boolean THEN $9 ELSE daily_cap END,
-            weight         = COALESCE($10, weight),
-            is_dry_run     = COALESCE($11, is_dry_run),
-            pricing_model      = COALESCE($12, pricing_model),
-            unit_price_cents   = COALESCE($13, unit_price_cents),
-            total_budget_cents = COALESCE($14, total_budget_cents),
+            weight         = COALESCE($8, weight),
+            is_dry_run     = COALESCE($9, is_dry_run),
+            pricing_model      = COALESCE($10, pricing_model),
+            unit_price_cents   = COALESCE($11, unit_price_cents),
+            total_budget_cents = COALESCE($12, total_budget_cents),
             updated_at     = NOW()
         WHERE id = $1
         "#,
@@ -1147,8 +1357,6 @@ async fn update_campaign(
     .bind(body.target_segment.as_ref().and_then(|x| x.as_ref()))
     .bind(body.starts_at)
     .bind(body.ends_at)
-    .bind(body.daily_cap.is_some())
-    .bind(body.daily_cap.flatten())
     .bind(body.weight)
     .bind(body.is_dry_run)
     .bind(pricing_model.as_deref())
@@ -1206,11 +1414,19 @@ async fn pause_campaign(
     let brand_id = fetch_campaign_brand(&state.db, id).await?;
     ctx.require_brand_scope(brand_id)?;
 
+    // Brand_admin (veya super impersonating brand) → 'manual_brand'.
+    // Saf super_admin → 'manual_super'. Audit ayrımı için.
+    let reason = if ctx.effective_role() == AdminRole::Brand {
+        "manual_brand"
+    } else {
+        "manual_super"
+    };
+
     let res = sqlx::query(
         r#"
         UPDATE ad_campaigns
         SET status = 'paused',
-            paused_reason = 'manual',
+            paused_reason = $2,
             is_active = FALSE,
             updated_at = NOW()
         WHERE id = $1 AND deleted_at IS NULL
@@ -1218,6 +1434,7 @@ async fn pause_campaign(
         "#,
     )
     .bind(id)
+    .bind(reason)
     .execute(&state.db)
     .await?;
 
@@ -1236,7 +1453,7 @@ async fn pause_campaign(
         Some("campaign"),
         Some(id),
         Some(brand_id),
-        Some(json!({ "reason": "manual" })),
+        Some(json!({ "reason": reason })),
     )
     .await;
 
@@ -1322,8 +1539,10 @@ async fn delete_campaign(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
     ctx.require_password_changed()?;
+    // BRAND_BALANCE_PLAN.md 11.5: cancel super-only. Brand_admin pause edebilir
+    // ama paketi öldüremez; iade kararı super'da.
+    ctx.require_super()?;
     let brand_id = fetch_campaign_brand(&state.db, id).await?;
-    ctx.require_brand_scope(brand_id)?;
 
     let before = fetch_campaign_row(&state.db, id).await?;
 
@@ -1471,9 +1690,10 @@ async fn fetch_campaign_row(db: &PgPool, id: Uuid) -> Result<Value, AppError> {
         r#"
         SELECT
             c.id, c.brand_id, c.brand_name, c.placement_key, c.creative, c.click_url,
-            c.target_segment, c.starts_at, c.ends_at, c.daily_cap, c.weight,
+            c.target_segment, c.starts_at, c.ends_at, c.weight,
             c.status, c.is_active, c.is_dry_run, c.deleted_at,
             c.pricing_model, c.unit_price_cents, c.total_budget_cents,
+            c.target_impressions, c.duration_months,
             c.spent_cents, c.paused_reason,
             c.created_at, c.updated_at,
             COALESCE((SELECT SUM(impressions) FROM ad_metrics m WHERE m.campaign_id = c.id), 0)::bigint AS impressions_total,
@@ -1600,7 +1820,6 @@ async fn get_campaign_detail(
         .and_then(|v| v.as_str())
         .ok_or_else(|| AppError::Internal("placement_key missing".to_string()))?
         .to_string();
-    let daily_cap = campaign.get("daily_cap").and_then(|v| v.as_i64());
 
     let metrics_collected: Value = sqlx::query_scalar(
         "SELECT metrics_collected FROM ad_placements WHERE key = $1",
@@ -1680,11 +1899,6 @@ async fn get_campaign_detail(
         }
     };
 
-    let daily_cap_used_pct = match daily_cap {
-        Some(cap) if cap > 0 => Some((today_impressions as f64 / cap as f64) * 100.0),
-        _ => None,
-    };
-
     let audit_rows = sqlx::query_as::<_, (
         Uuid, String, String, Option<Value>, DateTime<Utc>,
     )>(
@@ -1726,8 +1940,6 @@ async fn get_campaign_detail(
                 "ctr": ctr_window,
                 "avg_dwell_ms": avg_dwell_ms,
                 "today_impressions": today_impressions,
-                "daily_cap": daily_cap,
-                "daily_cap_used_pct": daily_cap_used_pct,
                 "metric_aggregates": Value::Object(metric_aggregates),
             },
             "daily_series": daily_series,
@@ -1942,6 +2154,10 @@ async fn approve_campaign(
     .await?;
 
     sync_badge_status_from_campaign(&state.db, id, "active").await;
+    // forum_thread placement onaylandığında gerçek bir forum_topics
+    // satırı oluştur — sponsorlu, pinned, ad_campaigns'e bağlı.
+    // Kullanıcı normal topic gibi açıp yorum yapabilir.
+    ensure_sponsored_forum_topic(&state.db, id).await;
 
     write_audit(
         &state.db,
@@ -2142,9 +2358,10 @@ async fn list_pending_review(
         r#"
         SELECT
             c.id, c.brand_id, c.brand_name, c.placement_key, c.creative, c.click_url,
-            c.target_segment, c.starts_at, c.ends_at, c.daily_cap, c.weight,
+            c.target_segment, c.starts_at, c.ends_at, c.weight,
             c.status, c.is_active, c.is_dry_run, c.deleted_at,
             c.pricing_model, c.unit_price_cents, c.total_budget_cents,
+            c.target_impressions, c.duration_months,
             c.spent_cents, c.paused_reason,
             c.created_at, c.updated_at,
             COALESCE((SELECT SUM(impressions) FROM ad_metrics m WHERE m.campaign_id = c.id), 0)::bigint AS impressions_total,
@@ -2240,6 +2457,210 @@ async fn notify_brand_admins(
 // ════════════════════════════════════════════════════════════════
 // AUDIT LOG  (T2.7 — brand-scoped)
 // ════════════════════════════════════════════════════════════════
+
+// ── Campaign extension (BRAND_BALANCE_PLAN §5.3) ──────────────
+//
+// "Tier = commitment rate" modeli: brand kampanyayı bir tier'de
+// (1/3/6/12 ay) açtığında o tier'in CPM'ine kilitleniyor. Uzatma yalnız
+// **ek impression** ekler; süre değişmez, fiyat kampanyanın orijinal
+// `unit_price_cents` snapshot'ından kullanılır — brand'in zaten ödediği
+// takvim hakkı tekrar ücretlendirilmez.
+//
+// Yeni süre/yeni paket gerekirse brand "Yeni Kampanya" ile o anki tier
+// fiyatından fresh purchase yapar (ayrı endpoint).
+//
+// completed/rejected/cancelled kampanyalar uzatılamaz.
+
+#[derive(Deserialize)]
+struct ExtendCampaignBody {
+    extra_impressions: i32,
+    description: Option<String>,
+}
+
+async fn extend_campaign(
+    State(state): State<AppState>,
+    ctx: AdminContext,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ExtendCampaignBody>,
+) -> Result<Json<Value>, AppError> {
+    ctx.require_password_changed()?;
+
+    if body.extra_impressions <= 0 {
+        return Err(AppError::BadRequest("extra_impressions must be > 0".into()));
+    }
+
+    let brand_id = fetch_campaign_brand(&state.db, id).await?;
+    ctx.require_brand_scope(brand_id)?;
+
+    let mut tx = state.db.begin().await?;
+
+    let row: Option<(
+        String,                       // status
+        Option<String>,               // paused_reason
+        Option<DateTime<Utc>>,        // deleted_at
+        DateTime<Utc>,                // ends_at (gösterim için, değişmez)
+        Option<i32>,                  // target_impressions
+        Option<i64>,                  // total_budget_cents
+        Option<i32>,                  // unit_price_cents (kampanyaya kilitli tier CPM'i)
+    )> = sqlx::query_as(
+        r#"
+        SELECT status, paused_reason, deleted_at,
+               ends_at, target_impressions, total_budget_cents, unit_price_cents
+        FROM ad_campaigns
+        WHERE id = $1
+        FOR UPDATE
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let (status, paused_reason, deleted_at, ends_at, target_imp, total_budget, unit_price_opt) =
+        row.ok_or_else(|| AppError::NotFound(format!("campaign {id} not found")))?;
+
+    if deleted_at.is_some() {
+        return Err(AppError::BadRequest("campaign_deleted".into()));
+    }
+    if status == "rejected" || status == "completed" {
+        return Err(AppError::BadRequest(format!(
+            "cannot extend from status '{status}'"
+        )));
+    }
+
+    // Kampanyanın orijinal tier CPM'i — uzatmada bu kullanılır, fresh
+    // placement_pricing lookup yapılmaz. Brand'in commitment rate'i bu.
+    let unit_price_cents = unit_price_opt.ok_or_else(|| {
+        AppError::BadRequest(
+            "campaign has no locked unit_price_cents (legacy?); cannot extend".into(),
+        )
+    })?;
+
+    let raw_cost: i64 =
+        ceil_div_1000(body.extra_impressions as i64 * unit_price_cents as i64);
+    let extra_cost_cents = round_up_to_100_tl(raw_cost);
+
+    // Brand balance lock + check
+    let current_balance: Option<i64> = sqlx::query_scalar(
+        "SELECT balance_cents FROM brands WHERE id = $1 FOR UPDATE",
+    )
+    .bind(brand_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let current_balance = current_balance
+        .ok_or_else(|| AppError::NotFound(format!("brand {brand_id} not found")))?;
+
+    if current_balance < extra_cost_cents {
+        return Err(AppError::BadRequest(format!(
+            "insufficient_balance: need {} cents, have {}",
+            extra_cost_cents, current_balance
+        )));
+    }
+    let new_balance = current_balance - extra_cost_cents;
+    sqlx::query("UPDATE brands SET balance_cents = $1, updated_at = NOW() WHERE id = $2")
+        .bind(new_balance)
+        .bind(brand_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // ends_at değişmez — brand zaten takvim hakkı satın aldı.
+    let new_target = target_imp.unwrap_or(0) + body.extra_impressions;
+    let new_budget = total_budget.unwrap_or(0) + extra_cost_cents;
+
+    // pause_reason='impression_cap_reached' ise resume; diğer pause sebepleri
+    // (manual_brand/manual_super/budget_exhausted) extend ile resume olmaz.
+    let resumed = paused_reason.as_deref() == Some("impression_cap_reached");
+
+    if resumed {
+        sqlx::query(
+            r#"
+            UPDATE ad_campaigns
+            SET target_impressions = $1, total_budget_cents = $2,
+                status = 'active', paused_reason = NULL,
+                is_active = TRUE, updated_at = NOW()
+            WHERE id = $3
+            "#,
+        )
+        .bind(new_target)
+        .bind(new_budget)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query(
+            r#"
+            UPDATE ad_campaigns
+            SET target_impressions = $1, total_budget_cents = $2,
+                updated_at = NOW()
+            WHERE id = $3
+            "#,
+        )
+        .bind(new_target)
+        .bind(new_budget)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    let actor = actor_label_for(&ctx);
+    let desc = body.description.clone().unwrap_or_else(|| {
+        format!(
+            "+{} imp @ {} cents/1k (locked tier)",
+            body.extra_impressions, unit_price_cents
+        )
+    });
+    sqlx::query(
+        r#"
+        INSERT INTO brand_wallet_transactions
+            (brand_id, kind, amount_cents, balance_after_cents,
+             ref_kind, ref_id, description,
+             admin_user_id, actor_label, impersonating_brand_id)
+        VALUES ($1, 'extend', $2, $3, 'campaign', $4, $5, $6, $7, $8)
+        "#,
+    )
+    .bind(brand_id)
+    .bind(-extra_cost_cents)
+    .bind(new_balance)
+    .bind(id)
+    .bind(&desc)
+    .bind(ctx.admin_user_id)
+    .bind(&actor)
+    .bind(ctx.impersonating_brand_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    write_audit(
+        &state.db,
+        &ctx,
+        "campaign_extend",
+        Some("campaign"),
+        Some(id),
+        Some(brand_id),
+        Some(json!({
+            "extra_impressions": body.extra_impressions,
+            "extra_cost_cents": extra_cost_cents,
+            "unit_price_cents": unit_price_cents,
+            "new_target_impressions": new_target,
+            "resumed_from_cap_reached": resumed,
+        })),
+    )
+    .await;
+
+    Ok(Json(json!({
+        "success": true,
+        "data": {
+            "campaign_id": id,
+            "ends_at": ends_at,
+            "new_target_impressions": new_target,
+            "new_total_budget_cents": new_budget,
+            "extra_cost_cents": extra_cost_cents,
+            "balance_after_cents": new_balance,
+            "resumed_from_cap_reached": resumed,
+        },
+        "error": null
+    })))
+}
 
 #[derive(Deserialize)]
 struct AuditQuery {
@@ -2340,6 +2761,21 @@ async fn upload_creative(
             .map(|f| f.to_string())
             .unwrap_or_else(|| format!("{}.png", Uuid::new_v4()));
 
+        // Sadece görsel veya video kabul ediyoruz. content_type
+        // multipart header'ından geliyor (browser set eder, defense-
+        // in-depth için ayrıca uzantı bazlı whitelist da var).
+        let content_type = field
+            .content_type()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let is_image = content_type.starts_with("image/");
+        let is_video = matches!(content_type.as_str(), "video/mp4" | "video/webm");
+        if !is_image && !is_video {
+            return Err(AppError::BadRequest(format!(
+                "Desteklenmeyen tip: {content_type} — sadece image/* veya video/mp4|webm"
+            )));
+        }
+
         let safe_name = format!(
             "{}_{}",
             chrono::Utc::now().timestamp_millis(),
@@ -2353,6 +2789,17 @@ async fn upload_creative(
             .bytes()
             .await
             .map_err(|e| AppError::BadRequest(format!("Read error: {e}")))?;
+
+        // Boyut limiti: görsel 10MB, video 50MB. Yüklenebilen en
+        // büyük dosya bu — disk şişmesini ve TLS handshake'i koruma.
+        let max_bytes = if is_video { 50 * 1024 * 1024 } else { 10 * 1024 * 1024 };
+        if data.len() > max_bytes {
+            return Err(AppError::BadRequest(format!(
+                "Dosya çok büyük: {} bytes — limit {} bytes",
+                data.len(),
+                max_bytes
+            )));
+        }
 
         tokio::fs::create_dir_all("uploads/ads")
             .await

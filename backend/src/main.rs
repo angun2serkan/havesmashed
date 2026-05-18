@@ -8,7 +8,9 @@ use tower_http::trace::TraceLayer;
 use havesmashed_backend::config::Config;
 use havesmashed_backend::handlers;
 use havesmashed_backend::middleware;
-use havesmashed_backend::services::{analytics_aggregator, budget_aggregator, event_tracker};
+use havesmashed_backend::services::{
+    analytics_aggregator, event_tracker, impression_cap_enforcer, wallet_reconciler,
+};
 use havesmashed_backend::AppState;
 
 #[tokio::main]
@@ -70,8 +72,11 @@ async fn main() -> anyhow::Result<()> {
             .allow_headers(Any)
     };
 
-    // Background tasks: hourly Redis→Postgres drain, daily aggregator.
+    // Background tasks: hourly Redis→Postgres drain, daily aggregator,
+    // daily impression-cap enforcer, daily wallet reconciler.
     spawn_analytics_workers(state.clone());
+    impression_cap_enforcer::spawn(state.clone());
+    wallet_reconciler::spawn(state.clone());
 
     let app = Router::new()
         .nest("/api", handlers::api_router())
@@ -125,7 +130,7 @@ fn spawn_analytics_workers(state: AppState) {
         }
     });
 
-    let agg_state = state.clone();
+    let agg_state = state;
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -134,21 +139,6 @@ fn spawn_analytics_workers(state: AppState) {
             let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
             if let Err(e) = analytics_aggregator::run_daily(&agg_state.db, yesterday).await {
                 tracing::error!("analytics_aggregator daily run failed: {e}");
-            }
-        }
-    });
-
-    // T0.4 — budget aggregator: every 5 minutes, refresh spent_cents,
-    // fire 50/80/95 alerts, auto-pause at 100%.
-    let budget_state = state;
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            let mut redis = budget_state.redis.clone();
-            if let Err(e) = budget_aggregator::run_once(&budget_state.db, &mut redis).await {
-                tracing::error!("budget_aggregator tick failed: {e}");
             }
         }
     });

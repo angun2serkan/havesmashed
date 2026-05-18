@@ -309,14 +309,11 @@ async fn list_grants(
     let rows = sqlx::query_as::<_, (
         Uuid,
         String,
-        Option<i32>,
-        Option<i64>,
         Option<String>,
         DateTime<Utc>,
     )>(
         r#"
-        SELECT brand_id, placement_key, max_concurrent,
-               monthly_impression_cap, notes, granted_at
+        SELECT brand_id, placement_key, notes, granted_at
         FROM brand_placement_grants
         WHERE brand_id = $1
         ORDER BY placement_key
@@ -332,10 +329,8 @@ async fn list_grants(
             json!({
                 "brand_id": r.0,
                 "placement_key": r.1,
-                "max_concurrent": r.2,
-                "monthly_impression_cap": r.3,
-                "notes": r.4,
-                "granted_at": r.5,
+                "notes": r.2,
+                "granted_at": r.3,
             })
         })
         .collect();
@@ -346,8 +341,6 @@ async fn list_grants(
 #[derive(Deserialize)]
 struct UpsertGrantBody {
     placement_key: String,
-    max_concurrent: Option<i32>,
-    monthly_impression_cap: Option<i64>,
     notes: Option<String>,
 }
 
@@ -360,36 +353,17 @@ async fn upsert_grant(
     ctx.require_super()?;
     ctx.require_password_changed()?;
 
-    if let Some(mc) = body.max_concurrent {
-        if mc <= 0 {
-            return Err(AppError::BadRequest(
-                "max_concurrent must be > 0".to_string(),
-            ));
-        }
-    }
-    if let Some(cap) = body.monthly_impression_cap {
-        if cap <= 0 {
-            return Err(AppError::BadRequest(
-                "monthly_impression_cap must be > 0".to_string(),
-            ));
-        }
-    }
-
     sqlx::query(
         r#"
         INSERT INTO brand_placement_grants
-            (brand_id, placement_key, max_concurrent, monthly_impression_cap, notes)
-        VALUES ($1, $2, $3, $4, $5)
+            (brand_id, placement_key, notes)
+        VALUES ($1, $2, $3)
         ON CONFLICT (brand_id, placement_key) DO UPDATE SET
-            max_concurrent         = EXCLUDED.max_concurrent,
-            monthly_impression_cap = EXCLUDED.monthly_impression_cap,
-            notes                  = EXCLUDED.notes
+            notes = EXCLUDED.notes
         "#,
     )
     .bind(id)
     .bind(&body.placement_key)
-    .bind(body.max_concurrent)
-    .bind(body.monthly_impression_cap)
     .bind(body.notes.as_deref())
     .execute(&state.db)
     .await
@@ -409,8 +383,7 @@ async fn upsert_grant(
         Some(id),
         Some(json!({
             "placement_key": body.placement_key,
-            "max_concurrent": body.max_concurrent,
-            "monthly_impression_cap": body.monthly_impression_cap,
+            "notes": body.notes,
         })),
     )
     .await;

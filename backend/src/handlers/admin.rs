@@ -60,6 +60,10 @@ pub struct CreateBadgeRequest {
     pub threshold: i32,
     pub image_url: Option<String>,
     pub gender: Option<String>,
+    /// Opsiyonel zengin kriter spec'i (sponsored badge ile aynı şema).
+    /// Verilirse evaluator unlock kararını bu spec'ten verir; legacy
+    /// category/threshold yolu kullanılmaz. Boş bırakılırsa legacy.
+    pub criteria: Option<crate::services::badge_criteria::BadgeCriteria>,
 }
 
 #[derive(Deserialize)]
@@ -71,6 +75,24 @@ pub struct UpdateBadgeRequest {
     pub threshold: Option<i32>,
     pub image_url: Option<String>,
     pub gender: Option<String>,
+    /// Three-state için Option<Option<T>>: alan yoksa `None` (değişmez),
+    /// `null` ise `Some(None)` (temizle), bir spec ise `Some(Some(spec))`
+    /// (validate + yaz). Düz `Option<T>` ikisini ayıramaz, custom
+    /// deserializer şart.
+    #[serde(default, deserialize_with = "deserialize_some_optional")]
+    pub criteria: Option<Option<crate::services::badge_criteria::BadgeCriteria>>,
+}
+
+/// Helper: alan absent ise `None`, `null` veya bir değer varsa `Some(...)`
+/// döner. Böylece three-state semantik elde edilir.
+fn deserialize_some_optional<'de, T, D>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -495,14 +517,14 @@ async fn list_badges(
     use sqlx::Row;
     let rows = if let Some(ref gender) = params.gender {
         sqlx::query(
-            "SELECT id, name, description, icon, category, threshold, image_url, gender, is_sponsored, sponsor_name, sponsor_click_url, sponsor_logo_url, sponsor_click_count FROM badges WHERE gender = $1 OR gender = 'both' ORDER BY id",
+            "SELECT id, name, description, icon, category, threshold, image_url, gender, is_sponsored, sponsor_name, sponsor_click_url, sponsor_logo_url, sponsor_click_count, criteria FROM badges WHERE gender = $1 OR gender = 'both' ORDER BY id",
         )
         .bind(gender)
         .fetch_all(&state.db)
         .await?
     } else {
         sqlx::query(
-            "SELECT id, name, description, icon, category, threshold, image_url, gender, is_sponsored, sponsor_name, sponsor_click_url, sponsor_logo_url, sponsor_click_count FROM badges ORDER BY id",
+            "SELECT id, name, description, icon, category, threshold, image_url, gender, is_sponsored, sponsor_name, sponsor_click_url, sponsor_logo_url, sponsor_click_count, criteria FROM badges ORDER BY id",
         )
         .fetch_all(&state.db)
         .await?
@@ -525,6 +547,7 @@ async fn list_badges(
                 "sponsor_click_url": r.get::<Option<String>, _>("sponsor_click_url"),
                 "sponsor_logo_url": r.get::<Option<String>, _>("sponsor_logo_url"),
                 "sponsor_click_count": r.get::<i64, _>("sponsor_click_count"),
+                "criteria": r.get::<Option<serde_json::Value>, _>("criteria"),
             })
         })
         .collect();
@@ -542,8 +565,20 @@ async fn create_badge(
 
     let gender = body.gender.as_deref().unwrap_or("both");
 
+    // Criteria varsa validate et + JSON'a çevir. Sponsored badge ile
+    // birebir aynı pipeline.
+    let criteria_json = if let Some(spec) = &body.criteria {
+        crate::services::badge_criteria::validate_criteria(spec)
+            .map_err(|e| AppError::BadRequest(format!("criteria: {e}")))?;
+        Some(serde_json::to_value(spec).map_err(|e| {
+            AppError::Internal(format!("badge criteria serialize: {e}"))
+        })?)
+    } else {
+        None
+    };
+
     let id = sqlx::query_scalar::<_, i32>(
-        "INSERT INTO badges (name, description, icon, category, threshold, image_url, gender) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+        "INSERT INTO badges (name, description, icon, category, threshold, image_url, gender, criteria) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
     )
     .bind(&body.name)
     .bind(&body.description)
@@ -552,6 +587,7 @@ async fn create_badge(
     .bind(body.threshold)
     .bind(&body.image_url)
     .bind(gender)
+    .bind(&criteria_json)
     .fetch_one(&state.db)
     .await?;
 
@@ -566,6 +602,7 @@ async fn create_badge(
             "threshold": body.threshold,
             "image_url": body.image_url,
             "gender": gender,
+            "criteria": criteria_json,
         },
         "error": null
     })))
@@ -640,6 +677,27 @@ async fn update_badge(
     if let Some(ref gender) = body.gender {
         sqlx::query("UPDATE badges SET gender = $1 WHERE id = $2")
             .bind(gender)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    // Criteria three-state:
+    //   None        → alan absent, dokunma
+    //   Some(None)  → null gönderildi, legacy moda dön (NULL)
+    //   Some(Some(spec)) → validate edip yaz
+    if let Some(maybe_spec) = body.criteria {
+        let criteria_json = if let Some(spec) = maybe_spec {
+            crate::services::badge_criteria::validate_criteria(&spec)
+                .map_err(|e| AppError::BadRequest(format!("criteria: {e}")))?;
+            Some(serde_json::to_value(&spec).map_err(|e| {
+                AppError::Internal(format!("badge criteria serialize: {e}"))
+            })?)
+        } else {
+            None
+        };
+        sqlx::query("UPDATE badges SET criteria = $1 WHERE id = $2")
+            .bind(&criteria_json)
             .bind(id)
             .execute(&state.db)
             .await?;

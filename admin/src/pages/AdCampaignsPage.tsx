@@ -13,6 +13,7 @@ import {
   Send,
   RotateCcw,
   Undo2,
+  CalendarPlus,
 } from 'lucide-react'
 import {
   adminApi,
@@ -22,6 +23,7 @@ import {
   type Placement,
 } from '@/services/api'
 import { CampaignEditorModal } from '@/components/CampaignEditorModal'
+import { ExtendCampaignModal } from '@/components/ExtendCampaignModal'
 import StatusBadge from '@/components/StatusBadge'
 import BudgetProgressBar from '@/components/BudgetProgressBar'
 import { effectiveRole, useAdminStore } from '@/stores/adminStore'
@@ -64,6 +66,7 @@ export default function AdCampaignsPage() {
   const [creating, setCreating] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<Campaign | null>(null)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
+  const [extending, setExtending] = useState<Campaign | null>(null)
 
   const [status, setStatus] = useState<StatusFilter>('all')
   const [placementFilter, setPlacementFilter] = useState<string>('')
@@ -309,6 +312,8 @@ export default function AdCampaignsPage() {
                         return setEditing(c)
                       case 'duplicate':
                         return handleDuplicate(c)
+                      case 'extend':
+                        return setExtending(c)
                       case 'delete':
                         return setConfirmDelete(c)
                     }
@@ -359,6 +364,19 @@ export default function AdCampaignsPage() {
         />
       )}
 
+      {/* Extend modal */}
+      {extending && (
+        <ExtendCampaignModal
+          campaign={extending}
+          currentImpressionsTotal={extending.impressions_total}
+          onClose={() => setExtending(null)}
+          onExtended={() => {
+            setExtending(null)
+            void load()
+          }}
+        />
+      )}
+
       {/* Reject modal */}
       {rejectingId && (
         <RejectModal
@@ -386,6 +404,7 @@ type RowAction =
   | 'restore'
   | 'edit'
   | 'duplicate'
+  | 'extend'
   | 'delete'
 
 function CampaignRow({
@@ -480,6 +499,8 @@ function RowActions({
 }) {
   const isDeleted = c.deleted_at !== null
   const budgetExhausted = c.paused_reason === 'budget_exhausted'
+  const capReached = c.paused_reason === 'impression_cap_reached'
+  const canExtend = !isDeleted && !['rejected', 'completed'].includes(c.status)
 
   // Restore is available only for soft-deleted campaigns (super only).
   if (isDeleted) {
@@ -544,8 +565,9 @@ function RowActions({
         </IconBtn>
       )}
 
-      {/* Resume — paused campaigns (gated when budget exhausted) */}
-      {c.status === 'paused' && (
+      {/* Resume — paused campaigns. Budget exhausted gated to super; cap
+          reached gated entirely (resume would just re-trigger cap — use Uzat). */}
+      {c.status === 'paused' && !capReached && (
         <IconBtn
           title={
             budgetExhausted
@@ -559,6 +581,29 @@ function RowActions({
         >
           <RotateCcw size={13} />
         </IconBtn>
+      )}
+
+      {/* İmpression ekle — paketin kilitli tier CPM'inden ek envanter.
+          cap_reached durumunda CTA olarak öne çıkar (devam etmek için tek
+          yol); aksi halde ikincil aksiyon. Süre değişmez. */}
+      {canExtend && (
+        <button
+          title={
+            capReached
+              ? 'Hedef gösterime ulaştı — ek impression eklenince devam eder'
+              : 'Kilitli tier CPM\'inden ek impression satın al (süre değişmez)'
+          }
+          onClick={() => onAction('extend')}
+          disabled={busy}
+          className={`p-1.5 rounded border text-xs inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+            capReached
+              ? 'bg-neon-500/20 border-neon-500/40 text-neon-300 hover:bg-neon-500/30'
+              : 'bg-dark-900 border-dark-700 text-dark-300 hover:text-white hover:bg-dark-700'
+          }`}
+        >
+          <CalendarPlus size={13} />
+          {capReached && <span className="text-[10px] font-medium">İmpression ekle</span>}
+        </button>
       )}
 
       <IconBtn title="Düzenle" onClick={() => onAction('edit')} disabled={busy}>

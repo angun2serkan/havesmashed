@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Heart, MessageCircle, Plus, Search, X } from "lucide-react";
+import { Heart, MessageCircle, Pin, Plus, Search, X } from "lucide-react";
 import { api } from "@/services/api";
 import { Button } from "@/components/ui/Button";
 import { NewTopicModal } from "@/components/Forum/NewTopicModal";
@@ -244,13 +244,20 @@ export function ForumPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {filteredTopics.map((topic) => (
+          {filteredTopics.map((topic) => {
+            const isSponsored = Boolean(topic.sponsorCampaignId);
+            return (
             <div
               key={topic.id}
               onClick={() => navigate(`/forum/${topic.id}`)}
-              className="flex gap-3 bg-dark-900 rounded-xl p-4 hover:bg-dark-800 transition-all cursor-pointer w-full"
+              className={`flex gap-3 rounded-xl p-4 transition-all cursor-pointer w-full ${
+                isSponsored
+                  ? "bg-dark-900 border border-neon-500/30 hover:bg-dark-800"
+                  : "bg-dark-900 hover:bg-dark-800"
+              }`}
             >
-              {/* Like button - fixed width */}
+              {/* Like button - sponsorlu topic'lerde de aktif; brand
+                  engagement metriği olarak sayılır */}
               <div className="flex flex-col items-center gap-1 shrink-0 pt-1 w-10">
                 <button
                   onClick={(e) => handleLike(e, topic.id)}
@@ -268,20 +275,40 @@ export function ForumPage() {
               {/* Content - flex-1 takes all available space */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  {topic.isPinned && <span className="text-xs" title="Sabitlendi">📌</span>}
-                  {topic.isLocked && <span className="text-xs" title="Kilitli">🔒</span>}
-                  <span
-                    className={`inline-block px-1.5 py-0.5 text-[10px] font-medium rounded-full ${categoryBadgeClass(topic.category)}`}
-                  >
-                    {topic.category}
-                  </span>
+                  {isSponsored ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-neon-400 font-semibold">
+                      <Pin size={11} /> Sponsorlu
+                      {topic.sponsorBrandName && (
+                        <span className="text-dark-400">· {topic.sponsorBrandName}</span>
+                      )}
+                    </span>
+                  ) : (
+                    <>
+                      {topic.isPinned && <span className="text-xs" title="Sabitlendi">📌</span>}
+                      {topic.isLocked && <span className="text-xs" title="Kilitli">🔒</span>}
+                      <span
+                        className={`inline-block px-1.5 py-0.5 text-[10px] font-medium rounded-full ${categoryBadgeClass(topic.category)}`}
+                      >
+                        {topic.category}
+                      </span>
+                    </>
+                  )}
                 </div>
+                {isSponsored && topic.imageUrl && (
+                  <img
+                    src={topic.imageUrl}
+                    alt=""
+                    className="w-full max-w-md aspect-2/1 object-contain bg-dark-950 rounded-lg mb-2"
+                  />
+                )}
                 <h3 className="text-sm font-semibold text-white mb-1 truncate">{topic.title}</h3>
                 <p className="text-xs text-dark-400 line-clamp-2 mb-2">{topic.bodyPreview}</p>
                 <div className="flex items-center gap-3 text-[10px] text-dark-500">
                   <span>
-                    {topic.topBadgeIcon && <span className="mr-0.5">{topic.topBadgeIcon}</span>}
-                    {topic.isAnonymous ? "Anonim" : topic.authorNickname ?? "Anonim"}
+                    {!isSponsored && topic.topBadgeIcon && <span className="mr-0.5">{topic.topBadgeIcon}</span>}
+                    {isSponsored
+                      ? topic.sponsorBrandName ?? "Sponsor"
+                      : topic.isAnonymous ? "Anonim" : topic.authorNickname ?? "Anonim"}
                   </span>
                 </div>
               </div>
@@ -297,7 +324,8 @@ export function ForumPage() {
                 </span>
               </div>
             </div>
-          ))}
+          );
+          })}
 
           {/* Load more */}
           {hasMore && !isFiltering && (

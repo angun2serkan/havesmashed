@@ -3,8 +3,11 @@ pub mod admin_admin_users;
 pub mod admin_ads;
 pub mod admin_auth;
 pub mod admin_brands;
+pub mod admin_cron_health;
 pub mod admin_notifications;
+pub mod admin_pricing;
 pub mod admin_stats;
+pub mod admin_wallet;
 pub mod ads;
 pub mod affiliate;
 pub mod auth;
@@ -56,9 +59,16 @@ pub fn api_router() -> Router<AppState> {
                 .merge(admin_auth::router())
                 .merge(admin_brands::router())
                 .merge(admin_admin_users::router())
-                .merge(admin_notifications::router()),
+                .merge(admin_notifications::router())
+                .merge(admin_wallet::router())
+                .merge(admin_cron_health::router()),
         )
         .nest("/admin/stats", admin_stats::router())
-        .nest("/admin/ads", admin_ads::router().merge(affiliate::admin_router()))
+        .nest(
+            "/admin/ads",
+            admin_ads::router()
+                .merge(affiliate::admin_router())
+                .merge(admin_pricing::router()),
+        )
         .nest("/ads", ads::router())
 }

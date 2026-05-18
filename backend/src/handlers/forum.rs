@@ -91,16 +91,21 @@ async fn list_topics(
         _ => "(t.like_count + t.comment_count) DESC, t.created_at DESC", // hot
     };
 
-    // Build dynamic query
+    // Build dynamic query.
+    // user_id NULL ise topic sponsorlu (sponsor_campaign_id set).
+    // LEFT JOIN'ler hem author bilgisini hem brand_name'i opsiyonel olarak çeker.
     let mut sql = String::from(
         r#"
         SELECT t.id, t.title, t.body, t.category, t.is_anonymous, t.is_pinned,
                t.is_locked, t.like_count, t.comment_count, t.created_at,
+               t.image_url, t.sponsor_campaign_id,
                u.nickname AS author_nickname,
+               ac.brand_name AS sponsor_brand_name,
                CASE WHEN fl.user_id IS NOT NULL THEN TRUE ELSE FALSE END AS liked,
                (SELECT b.icon FROM user_badges ub JOIN badges b ON b.id = ub.badge_id WHERE ub.user_id = t.user_id ORDER BY b.id DESC LIMIT 1) AS top_badge_icon
         FROM forum_topics t
-        JOIN users u ON u.id = t.user_id
+        LEFT JOIN users u ON u.id = t.user_id
+        LEFT JOIN ad_campaigns ac ON ac.id = t.sponsor_campaign_id
         LEFT JOIN forum_likes fl ON fl.target_type = 'topic' AND fl.target_id = t.id AND fl.user_id = $1
         WHERE t.deleted_at IS NULL
         "#,
@@ -179,6 +184,9 @@ async fn list_topics(
                 "author_nickname": author_nickname,
                 "top_badge_icon": top_badge_icon,
                 "liked": r.get::<bool, _>("liked"),
+                "image_url": r.get::<Option<String>, _>("image_url"),
+                "sponsor_campaign_id": r.get::<Option<Uuid>, _>("sponsor_campaign_id"),
+                "sponsor_brand_name": r.get::<Option<String>, _>("sponsor_brand_name"),
             })
         })
         .collect();
@@ -296,17 +304,20 @@ async fn get_topic(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Fetch topic
+    // Fetch topic — sponsorlu için user yok, ad_campaigns'ten brand_name çekiyoruz.
     let topic_row = sqlx::query(
         r#"
         SELECT t.id, t.user_id, t.title, t.body, t.category, t.is_anonymous,
                t.is_pinned, t.is_locked, t.like_count, t.comment_count,
                t.created_at, t.updated_at,
+               t.image_url, t.sponsor_campaign_id,
                u.nickname AS author_nickname,
+               ac.brand_name AS sponsor_brand_name,
                CASE WHEN fl.user_id IS NOT NULL THEN TRUE ELSE FALSE END AS liked,
                (SELECT b.icon FROM user_badges ub JOIN badges b ON b.id = ub.badge_id WHERE ub.user_id = t.user_id ORDER BY b.id DESC LIMIT 1) AS top_badge_icon
         FROM forum_topics t
-        JOIN users u ON u.id = t.user_id
+        LEFT JOIN users u ON u.id = t.user_id
+        LEFT JOIN ad_campaigns ac ON ac.id = t.sponsor_campaign_id
         LEFT JOIN forum_likes fl ON fl.target_type = 'topic' AND fl.target_id = t.id AND fl.user_id = $2
         WHERE t.id = $1 AND t.deleted_at IS NULL
         "#,
@@ -331,7 +342,7 @@ async fn get_topic(
 
     let topic = json!({
         "id": topic_row.get::<Uuid, _>("id"),
-        "user_id": topic_row.get::<Uuid, _>("user_id"),
+        "user_id": topic_row.get::<Option<Uuid>, _>("user_id"),
         "title": topic_row.get::<String, _>("title"),
         "body": topic_row.get::<String, _>("body"),
         "category": topic_row.get::<String, _>("category"),
@@ -345,6 +356,9 @@ async fn get_topic(
         "author_nickname": author_nickname,
         "top_badge_icon": topic_top_badge_icon,
         "liked": topic_row.get::<bool, _>("liked"),
+        "image_url": topic_row.get::<Option<String>, _>("image_url"),
+        "sponsor_campaign_id": topic_row.get::<Option<Uuid>, _>("sponsor_campaign_id"),
+        "sponsor_brand_name": topic_row.get::<Option<String>, _>("sponsor_brand_name"),
     });
 
     // Fetch comments

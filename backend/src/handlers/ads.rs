@@ -73,18 +73,11 @@ async fn next_ad(
         return Ok(empty_response());
     }
 
-    // 3. Eligible candidates for this placement, with today's impression count
-    //    joined for the daily-cap check.
+    // 3. Eligible candidates for this placement.
     let candidates: Vec<CandidateRow> = sqlx::query_as(
         r#"
         SELECT
-            c.id, c.creative, c.click_url, c.target_segment,
-            c.daily_cap, c.weight,
-            COALESCE(
-                (SELECT impressions FROM ad_metrics
-                 WHERE campaign_id = c.id AND date = CURRENT_DATE),
-                0
-            ) AS today_impressions
+            c.id, c.creative, c.click_url, c.target_segment, c.weight
         FROM ad_campaigns c
         WHERE c.placement_key = $1
           AND c.status = 'active'
@@ -101,18 +94,11 @@ async fn next_ad(
         return Ok(empty_response());
     }
 
-    // 4. Targeting + daily-cap filter.
+    // 4. Targeting filter.
     let profile = ad_targeting::load_profile(&state.db, &mut redis, auth.user_id).await?;
     let eligible: Vec<CandidateRow> = candidates
         .into_iter()
-        .filter(|c| {
-            if let Some(cap) = c.daily_cap {
-                if c.today_impressions >= cap {
-                    return false;
-                }
-            }
-            ad_targeting::matches_segment(&profile, c.target_segment.as_ref())
-        })
+        .filter(|c| ad_targeting::matches_segment(&profile, c.target_segment.as_ref()))
         .collect();
 
     if eligible.is_empty() {
@@ -159,9 +145,7 @@ struct CandidateRow {
     creative: Value,
     click_url: String,
     target_segment: Option<Value>,
-    daily_cap: Option<i32>,
     weight: i32,
-    today_impressions: i32,
 }
 
 fn empty_response() -> Json<Value> {
@@ -540,10 +524,6 @@ async fn gate_next(
         .get("min_view_seconds")
         .and_then(|v| v.as_u64())
         .unwrap_or(5);
-    let skip_after_seconds = rules
-        .get("skip_after_seconds")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(5);
 
     // 2. New-user grace: skip the gate for the user's first N dates so
     //    onboarding friction stays low.
@@ -595,13 +575,7 @@ async fn gate_next(
     let candidates: Vec<CandidateRow> = sqlx::query_as(
         r#"
         SELECT
-            c.id, c.creative, c.click_url, c.target_segment,
-            c.daily_cap, c.weight,
-            COALESCE(
-                (SELECT impressions FROM ad_metrics
-                 WHERE campaign_id = c.id AND date = CURRENT_DATE),
-                0
-            ) AS today_impressions
+            c.id, c.creative, c.click_url, c.target_segment, c.weight
         FROM ad_campaigns c
         WHERE c.placement_key = $1
           AND c.status = 'active'
@@ -621,14 +595,7 @@ async fn gate_next(
     let profile = ad_targeting::load_profile(&state.db, &mut redis, auth.user_id).await?;
     let eligible: Vec<CandidateRow> = candidates
         .into_iter()
-        .filter(|c| {
-            if let Some(cap) = c.daily_cap {
-                if c.today_impressions >= cap {
-                    return false;
-                }
-            }
-            ad_targeting::matches_segment(&profile, c.target_segment.as_ref())
-        })
+        .filter(|c| ad_targeting::matches_segment(&profile, c.target_segment.as_ref()))
         .collect();
 
     if eligible.is_empty() {
@@ -663,7 +630,6 @@ async fn gate_next(
             "creative": chosen.creative.clone(),
             "click_url": chosen.click_url.clone(),
             "min_view_seconds": min_view_seconds,
-            "skip_after_seconds": skip_after_seconds,
             "gate_token": gate_token,
         },
         "error": null
@@ -702,12 +668,12 @@ async fn gate_complete(
     auth: AuthUser,
     Json(body): Json<GateCompleteBody>,
 ) -> Result<Json<Value>, AppError> {
+    // Skip kaldırıldı — yalnızca completed kabul ediliyor.
     let outcome = match body.outcome.as_str() {
         "completed" => "view_complete",
-        "skipped" => "skip",
         other => {
             return Err(AppError::BadRequest(format!(
-                "outcome must be 'completed' or 'skipped' (got '{other}')"
+                "outcome must be 'completed' (got '{other}')"
             )))
         }
     };

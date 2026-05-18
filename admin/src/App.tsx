@@ -16,7 +16,6 @@ import NotificationsPage from '@/pages/NotificationsPage'
 import UsersPage from '@/pages/UsersPage'
 import ForumPage from '@/pages/ForumPage'
 import AdvertiserStatsPage from '@/pages/AdvertiserStatsPage'
-import AdPlacementsPage from '@/pages/AdPlacementsPage'
 import AdPlacementDetailPage from '@/pages/AdPlacementDetailPage'
 import AdCampaignsPage from '@/pages/AdCampaignsPage'
 import AdCampaignDetailPage from '@/pages/AdCampaignDetailPage'
@@ -25,8 +24,11 @@ import AffiliateLinksPage from '@/pages/AffiliateLinksPage'
 import AdAuditLogPage from '@/pages/AdAuditLogPage'
 import BrandsPage from '@/pages/BrandsPage'
 import BrandDetailPage from '@/pages/BrandDetailPage'
+import BrandWalletPage from '@/pages/BrandWalletPage'
+import BrandWalletPortalPage from '@/pages/BrandWalletPortalPage'
 import AdminUsersPage from '@/pages/AdminUsersPage'
 import InboxPage from '@/pages/InboxPage'
+import CronHealthPage from '@/pages/CronHealthPage'
 
 /**
  * Wraps protected routes. Three gates run in order:
@@ -124,6 +126,7 @@ export default function App() {
         <Route path="/" element={<HomeRoute />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/inbox" element={<InboxPage />} />
+        <Route path="/wallet" element={<BrandWalletPortalPage />} />
 
         {/* Super-only platform content */}
         <Route
@@ -161,12 +164,19 @@ export default function App() {
           element={<RoleGate role="super_admin"><BrandDetailPage /></RoleGate>}
         />
         <Route
+          path="/brands/:id/wallet"
+          element={<RoleGate role="super_admin"><BrandWalletPage /></RoleGate>}
+        />
+        <Route
           path="/admin-users"
           element={<RoleGate role="super_admin"><AdminUsersPage /></RoleGate>}
         />
+        <Route
+          path="/admin/cron-health"
+          element={<RoleGate role="super_admin"><CronHealthPage /></RoleGate>}
+        />
 
         {/* Ads — both roles see (brand_admin scoped by API) */}
-        <Route path="/ads/placements" element={<AdPlacementsPage />} />
         <Route path="/ads/placements/:key" element={<AdPlacementDetailPage />} />
         <Route path="/ads/campaigns" element={<AdCampaignsPage />} />
         <Route path="/ads/campaigns/:id" element={<AdCampaignDetailPage />} />

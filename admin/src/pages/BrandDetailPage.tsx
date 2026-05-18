@@ -1,21 +1,27 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Wallet, ArrowDownToLine, Settings, Undo2 } from 'lucide-react'
 import {
   adminApi,
   brandsApi,
+  walletApi,
   type Brand,
   type BrandGrant,
   type Placement,
+  type WalletSummary,
 } from '@/services/api'
+import { formatTRY, formatTRYSigned } from '@/lib/formatTRY'
+import { WalletActionModal, type WalletActionKind } from '@/components/WalletActionModal'
 
 export default function BrandDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [brand, setBrand] = useState<Brand | null>(null)
   const [grants, setGrants] = useState<BrandGrant[] | null>(null)
   const [placements, setPlacements] = useState<Placement[] | null>(null)
+  const [wallet, setWallet] = useState<WalletSummary | null>(null)
   const [editing, setEditing] = useState(false)
   const [grantOpen, setGrantOpen] = useState(false)
+  const [walletAction, setWalletAction] = useState<WalletActionKind | null>(null)
   const [error, setError] = useState('')
 
   function load() {
@@ -24,11 +30,13 @@ export default function BrandDetailPage() {
       brandsApi.get(id),
       brandsApi.listGrants(id),
       adminApi.listPlacements(),
+      walletApi.get(id).catch(() => null),
     ])
-      .then(([b, g, p]) => {
+      .then(([b, g, p, w]) => {
         setBrand(b)
         setGrants(g)
         setPlacements(p)
+        setWallet(w)
       })
       .catch((e) => setError(e instanceof Error ? e.message : 'load failed'))
   }
@@ -111,6 +119,118 @@ export default function BrandDetailPage() {
             )}
           </div>
 
+          {wallet && (
+            <section className="bg-dark-900 border border-dark-700 rounded-lg mb-6">
+              <div className="flex items-center justify-between p-4 border-b border-dark-800">
+                <div className="flex items-center gap-2">
+                  <Wallet size={16} className="text-neon-500" />
+                  <div>
+                    <h2 className="font-semibold text-white">Cüzdan</h2>
+                    <p className="text-xs text-dark-400">
+                      Brand bakiyesi ve son işlemler.
+                    </p>
+                  </div>
+                </div>
+                <Link
+                  to={`/brands/${brand.id}/wallet`}
+                  className="text-xs text-neon-400 hover:text-neon-300 underline"
+                >
+                  Tüm işlemler →
+                </Link>
+              </div>
+
+              <div className="p-4 border-b border-dark-800">
+                <div className="flex items-end justify-between gap-4 flex-wrap">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wider text-dark-500 mb-1">
+                      Bakiye
+                    </p>
+                    <p className="text-3xl font-bold text-white font-mono">
+                      {formatTRY(wallet.balance_cents)}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setWalletAction('topup')}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-accent-green/15 border border-accent-green/30 text-accent-green rounded-lg text-sm hover:bg-accent-green/25"
+                    >
+                      <ArrowDownToLine size={14} /> Bakiye Yükle
+                    </button>
+                    <button
+                      onClick={() => setWalletAction('refund')}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-blue-500/15 border border-blue-500/30 text-blue-300 rounded-lg text-sm hover:bg-blue-500/25"
+                    >
+                      <Undo2 size={14} /> İade
+                    </button>
+                    <button
+                      onClick={() => setWalletAction('adjust')}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-500/15 border border-amber-500/30 text-amber-300 rounded-lg text-sm hover:bg-amber-500/25"
+                    >
+                      <Settings size={14} /> Düzelt
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <table className="w-full text-sm">
+                <thead className="text-xs text-dark-400 uppercase">
+                  <tr>
+                    <th className="text-left px-4 py-2">Tip</th>
+                    <th className="text-right px-4 py-2">Tutar</th>
+                    <th className="text-right px-4 py-2">Sonraki Bakiye</th>
+                    <th className="text-left px-4 py-2">Açıklama</th>
+                    <th className="text-left px-4 py-2">Aktör</th>
+                    <th className="text-right px-4 py-2">Zaman</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {wallet.recent_transactions.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-4 text-center text-dark-400">
+                        Henüz işlem yok.
+                      </td>
+                    </tr>
+                  )}
+                  {wallet.recent_transactions.map((tx) => {
+                    const signed = formatTRYSigned(tx.amount_cents)
+                    return (
+                      <tr key={tx.id} className="border-t border-dark-800">
+                        <td className="px-4 py-2">
+                          <span className="px-1.5 py-0.5 rounded bg-dark-800 text-[10px] uppercase font-mono">
+                            {tx.kind}
+                          </span>
+                        </td>
+                        <td
+                          className={`px-4 py-2 text-right font-mono ${
+                            signed.sign === '+'
+                              ? 'text-accent-green'
+                              : signed.sign === '-'
+                                ? 'text-red-400'
+                                : 'text-dark-300'
+                          }`}
+                        >
+                          {signed.text}
+                        </td>
+                        <td className="px-4 py-2 text-right font-mono text-dark-300">
+                          {formatTRY(tx.balance_after_cents)}
+                        </td>
+                        <td className="px-4 py-2 text-dark-400 text-xs max-w-md truncate">
+                          {tx.description ?? '—'}
+                        </td>
+                        <td className="px-4 py-2 text-dark-500 text-xs font-mono">
+                          {tx.actor_label}
+                        </td>
+                        <td className="px-4 py-2 text-right text-dark-500 text-xs">
+                          {new Date(tx.created_at).toLocaleString('tr-TR')}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </section>
+          )}
+
           <section className="bg-dark-900 border border-dark-700 rounded-lg">
             <div className="flex items-center justify-between p-4 border-b border-dark-800">
               <div>
@@ -130,8 +250,6 @@ export default function BrandDetailPage() {
               <thead className="text-xs text-dark-400 uppercase">
                 <tr>
                   <th className="text-left px-4 py-2">Placement</th>
-                  <th className="text-right px-4 py-2">Max Concurrent</th>
-                  <th className="text-right px-4 py-2">Monthly Imp Cap</th>
                   <th className="text-left px-4 py-2">Notlar</th>
                   <th className="px-4 py-2"></th>
                 </tr>
@@ -139,14 +257,14 @@ export default function BrandDetailPage() {
               <tbody>
                 {grants === null && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-4 text-center text-dark-400">
+                    <td colSpan={3} className="px-4 py-4 text-center text-dark-400">
                       Yükleniyor…
                     </td>
                   </tr>
                 )}
                 {grants?.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-4 text-center text-dark-400">
+                    <td colSpan={3} className="px-4 py-4 text-center text-dark-400">
                       Henüz grant verilmedi.
                     </td>
                   </tr>
@@ -155,12 +273,6 @@ export default function BrandDetailPage() {
                   <tr key={g.placement_key} className="border-t border-dark-800">
                     <td className="px-4 py-2 font-mono text-xs text-neon-400">
                       {g.placement_key}
-                    </td>
-                    <td className="px-4 py-2 text-right tabular-nums">
-                      {g.max_concurrent ?? '∞'}
-                    </td>
-                    <td className="px-4 py-2 text-right tabular-nums">
-                      {g.monthly_impression_cap?.toLocaleString() ?? '∞'}
                     </td>
                     <td className="px-4 py-2 text-dark-400 text-xs">
                       {g.notes ?? '—'}
@@ -202,6 +314,19 @@ export default function BrandDetailPage() {
               onClose={() => setGrantOpen(false)}
               onSaved={() => {
                 setGrantOpen(false)
+                load()
+              }}
+            />
+          )}
+          {walletAction && wallet && (
+            <WalletActionModal
+              brandId={brand.id}
+              brandName={brand.display_name}
+              currentBalanceCents={wallet.balance_cents}
+              kind={walletAction}
+              onClose={() => setWalletAction(null)}
+              onSaved={() => {
+                setWalletAction(null)
                 load()
               }}
             />
@@ -314,8 +439,6 @@ function GrantModal({
     (p) => !existing.some((g) => g.placement_key === p.key),
   )
   const [placementKey, setPlacementKey] = useState(available[0]?.key ?? '')
-  const [maxConcurrent, setMaxConcurrent] = useState('')
-  const [monthlyCap, setMonthlyCap] = useState('')
   const [notes, setNotes] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -327,8 +450,6 @@ function GrantModal({
     try {
       await brandsApi.upsertGrant(brandId, {
         placement_key: placementKey,
-        max_concurrent: maxConcurrent ? Number(maxConcurrent) : null,
-        monthly_impression_cap: monthlyCap ? Number(monthlyCap) : null,
         notes: notes.trim() || null,
       })
       onSaved()
@@ -364,30 +485,6 @@ function GrantModal({
               ))
             )}
           </select>
-        </label>
-        <label className="block">
-          <span className="block text-xs text-dark-300 mb-1">
-            Max concurrent (boş = sınırsız)
-          </span>
-          <input
-            type="number"
-            min="1"
-            value={maxConcurrent}
-            onChange={(e) => setMaxConcurrent(e.target.value)}
-            className="w-full px-3 py-2 bg-dark-950 border border-dark-700 rounded text-sm text-white"
-          />
-        </label>
-        <label className="block">
-          <span className="block text-xs text-dark-300 mb-1">
-            Monthly impression cap (boş = sınırsız)
-          </span>
-          <input
-            type="number"
-            min="1"
-            value={monthlyCap}
-            onChange={(e) => setMonthlyCap(e.target.value)}
-            className="w-full px-3 py-2 bg-dark-950 border border-dark-700 rounded text-sm text-white"
-          />
         </label>
         <label className="block">
           <span className="block text-xs text-dark-300 mb-1">Notlar</span>

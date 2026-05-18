@@ -189,6 +189,8 @@ struct DailyClick {
 struct AffiliateRow {
     id: Uuid,
     slug: String,
+    /// Operatör-okur etiket. NULL ise UI slug'a fallback yapar.
+    name: Option<String>,
     brand_id: Option<Uuid>,
     brand_name: String,
     target_url: String,
@@ -236,6 +238,7 @@ async fn list_affiliate(
         SELECT
             l.id,
             l.slug,
+            l.name,
             l.brand_id,
             l.brand_name,
             l.target_url,
@@ -263,6 +266,7 @@ async fn list_affiliate(
     let rows = sqlx::query_as::<_, (
         Uuid,
         String,
+        Option<String>,
         Option<Uuid>,
         String,
         String,
@@ -321,17 +325,18 @@ async fn list_affiliate(
             AffiliateRow {
                 id: r.0,
                 slug: r.1,
-                brand_id: r.2,
-                brand_name: r.3,
-                target_url: r.4,
-                utm_campaign: r.5,
-                is_active: r.6,
-                deleted_at: r.7,
-                notes: r.8,
-                created_at: r.9,
-                updated_at: r.10,
-                clicks_30d: r.11.unwrap_or(0),
-                clicks_total: r.12.unwrap_or(0),
+                name: r.2,
+                brand_id: r.3,
+                brand_name: r.4,
+                target_url: r.5,
+                utm_campaign: r.6,
+                is_active: r.7,
+                deleted_at: r.8,
+                notes: r.9,
+                created_at: r.10,
+                updated_at: r.11,
+                clicks_30d: r.12.unwrap_or(0),
+                clicks_total: r.13.unwrap_or(0),
                 daily_clicks,
             }
         })
@@ -346,6 +351,9 @@ struct CreateAffiliateBody {
     /// Required when calling as super_admin without a brand context.
     /// For brand_admin (or super impersonating), server forces to scope.
     brand_id: Option<Uuid>,
+    /// Operatör-okur etiket (1..=80). Boş veya yoksa NULL kaydedilir;
+    /// UI bu durumda slug'ı gösterir.
+    name: Option<String>,
     target_url: String,
     utm_campaign: Option<String>,
     notes: Option<String>,
@@ -379,6 +387,14 @@ async fn create_affiliate(
             ));
         }
     }
+    let name = body.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(n) = name {
+        if n.chars().count() > 80 {
+            return Err(AppError::BadRequest(
+                "name must be 1..=80 chars".to_string(),
+            ));
+        }
+    }
 
     // Brand resolution: brand_admin / impersonating super → forced to
     // their scope; super_admin must provide brand_id explicitly.
@@ -402,8 +418,8 @@ async fn create_affiliate(
 
     let id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO affiliate_links (slug, brand_id, brand_name, target_url, utm_campaign, notes)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO affiliate_links (slug, brand_id, brand_name, target_url, utm_campaign, notes, name)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         "#,
     )
@@ -413,6 +429,7 @@ async fn create_affiliate(
     .bind(target_url)
     .bind(utm_campaign)
     .bind(body.notes.as_deref())
+    .bind(name)
     .fetch_one(&state.db)
     .await
     .map_err(|e| match e {
@@ -443,6 +460,8 @@ struct UpdateAffiliateBody {
     utm_campaign: Option<Option<String>>, // double Option = explicit null clears
     notes: Option<Option<String>>,
     is_active: Option<bool>,
+    /// Three-state: absent → değişmez, null → temizle, value → set.
+    name: Option<Option<String>>,
 }
 
 async fn update_affiliate(
@@ -477,6 +496,14 @@ async fn update_affiliate(
             ));
         }
     }
+    if let Some(Some(ref n)) = body.name {
+        let trimmed = n.trim();
+        if !trimmed.is_empty() && trimmed.chars().count() > 80 {
+            return Err(AppError::BadRequest(
+                "name must be 1..=80 chars".to_string(),
+            ));
+        }
+    }
 
     let utm_set = body.utm_campaign.is_some();
     let utm_value = body
@@ -486,6 +513,11 @@ async fn update_affiliate(
         .filter(|s| !s.is_empty());
     let notes_set = body.notes.is_some();
     let notes_value = body.notes.clone().flatten();
+    let name_set = body.name.is_some();
+    let name_value = body
+        .name
+        .as_ref()
+        .and_then(|opt| opt.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(String::from));
 
     let result = sqlx::query(
         r#"
@@ -494,6 +526,7 @@ async fn update_affiliate(
             utm_campaign = CASE WHEN $3::boolean THEN $4 ELSE utm_campaign END,
             notes        = CASE WHEN $5::boolean THEN $6 ELSE notes END,
             is_active    = COALESCE($7, is_active),
+            name         = CASE WHEN $8::boolean THEN $9 ELSE name END,
             updated_at   = NOW()
         WHERE id = $1 AND deleted_at IS NULL
         "#,
@@ -505,6 +538,8 @@ async fn update_affiliate(
     .bind(notes_set)
     .bind(notes_value)
     .bind(body.is_active)
+    .bind(name_set)
+    .bind(name_value)
     .execute(&state.db)
     .await?;
 
@@ -647,7 +682,7 @@ async fn fetch_affiliate(db: &PgPool, id: Uuid) -> Result<Value, AppError> {
     use sqlx::Row;
     let row = sqlx::query(
         r#"
-        SELECT id, slug, brand_name, target_url, utm_campaign,
+        SELECT id, slug, name, brand_name, target_url, utm_campaign,
                is_active, notes, created_at, updated_at
         FROM affiliate_links WHERE id = $1
         "#,
@@ -660,6 +695,7 @@ async fn fetch_affiliate(db: &PgPool, id: Uuid) -> Result<Value, AppError> {
     Ok(json!({
         "id": row.get::<Uuid, _>("id"),
         "slug": row.get::<String, _>("slug"),
+        "name": row.get::<Option<String>, _>("name"),
         "brand_name": row.get::<String, _>("brand_name"),
         "target_url": row.get::<String, _>("target_url"),
         "utm_campaign": row.get::<Option<String>, _>("utm_campaign"),

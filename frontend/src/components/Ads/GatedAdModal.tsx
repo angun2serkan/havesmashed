@@ -1,28 +1,24 @@
 // Gated interstitial — fullscreen ad overlay shown between submit
-// and save. Two timers run in parallel:
-//   - min_view_seconds: until reached, the auto-complete handler is
-//     armed but the user can't be released early. (We do let the
-//     auto-complete fire as soon as the timer expires — the spec
-//     reads "tamamlanınca/skip basınca" so completion is implicit.)
-//   - skip_after_seconds: the Skip button stays disabled until this
-//     threshold elapses.
+// and save.
 //
-// KVKK / spec requirements:
-//   * "Sponsorlu" badge visible at all times.
-//   * Link to Settings → "Sponsorlu içerik göster" so the user can
-//     turn the gate off going forward.
-//   * Pressing ESC or clicking outside does NOT dismiss — the only
-//     exits are Skip (after threshold) and tamamlama (auto on
-//     min_view_seconds expiry, or via the explicit "Devam et" CTA).
+// Devam butonu kuralı:
+//   * Video varsa: en az bir kez baştan sona oynayana kadar disabled.
+//     Bu süre boyunca video autoplay ile döner; biter bitmez
+//     videoCompletedOnce=true olur ve manuel olarak yeniden başlatılır
+//     (loop attribute'u 'ended' event'ini bastırırdı, onun yerine
+//     onEnded handler'ında play() çağırıyoruz).
+//   * Video yoksa: min_view_seconds dolana kadar disabled (fallback).
+//
+// Ses: önce sesli autoplay denenir. Browser bloklarsa muted'a düşülür
+// ve "Sesi aç" overlay'i kullanıcıya tek-tıkla unmute imkânı verir.
+//
+// "Sponsorlu" badge her zaman görünür. ESC / dış-tıklama kapatmaz.
+// Atla butonu yok.
 //
 // We do NOT call /api/ads/click here; the gate isn't a click placement.
-// If the brand wants users to land on their site, that flow goes via
-// the existing /api/ads/click endpoint and an explicit CTA button in
-// the creative — left to a follow-up if needed.
 
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { Clock, X, Settings as SettingsIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Clock, X, Volume2, VolumeX } from "lucide-react";
 
 export type GatedAd = {
   context: string;
@@ -32,20 +28,17 @@ export type GatedAd = {
   creative: any;
   click_url: string;
   min_view_seconds: number;
-  skip_after_seconds: number;
   gate_token: string;
 };
 
-type Outcome = "completed" | "skipped";
+type Outcome = "completed";
 
 interface Props {
   ad: GatedAd;
-  /** Fires when the user has watched at least min_view_seconds. */
+  /** Fires when the user has watched at least one full play (video)
+   *  veya min_view_seconds (no-video fallback). */
   onComplete: (outcome: Outcome, elapsedMs: number) => Promise<void> | void;
-  /** Fires when the user dismisses the modal without watching enough.
-   * In current flow this is unreachable (skip becomes "skipped"), but
-   * kept for the future Settings-driven hard cancel.
-   */
+  /** Reserved for future Settings-driven hard cancel. */
   onCancel?: () => void;
 }
 
@@ -54,23 +47,73 @@ export function GatedAdModal({ ad, onComplete, onCancel }: Props) {
   const [now, setNow] = useState<number>(() => Date.now());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [videoCompletedOnce, setVideoCompletedOnce] = useState(false);
+  // Browser autoplay policy: sesli autoplay genelde recent user
+  // gesture + yüksek MEI gerektirir. Önce sesli denenir; rejected
+  // olursa sessize düşeriz ve "Sesi aç" overlay'i gösteririz.
+  const [isMuted, setIsMuted] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Update once per second; sub-second precision isn't needed for the
-  // countdown copy and a steady tick keeps the buttons predictable.
+  // Update timer for the no-video fallback countdown copy.
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(id);
   }, []);
 
+  const sponsorName: string =
+    ad.creative?.sponsor_name ?? ad.creative?.brand_name ?? "Sponsor";
+  const title: string = ad.creative?.title ?? "Sponsorlu içerik";
+  const body: string | undefined = ad.creative?.body;
+  const cta: string = ad.creative?.cta ?? "Devam et";
+  const image: string | undefined = ad.creative?.image_url;
+  const video: string | undefined = ad.creative?.video_url;
+  const logo: string | undefined = ad.creative?.logo_url;
+
   const elapsedMs = now - startedAt;
   const elapsedSec = Math.floor(elapsedMs / 1000);
   const minSec = Math.max(0, ad.min_view_seconds);
-  const skipSec = Math.max(0, ad.skip_after_seconds);
-
   const minViewReached = elapsedSec >= minSec;
-  const skipUnlocked = elapsedSec >= skipSec;
-  const remainingForSkip = Math.max(0, skipSec - elapsedSec);
   const remainingForComplete = Math.max(0, minSec - elapsedSec);
+
+  // Devam butonu: video varsa bir kez biten + (autoplay başarısızsa
+  // güvenlik ağı olarak min_view_seconds × 2 sonrası); video yoksa
+  // sadece timer.
+  const canContinue = video
+    ? videoCompletedOnce || elapsedSec >= minSec * 2
+    : minViewReached;
+
+  // Önce sesli autoplay'i deneriz (kullanıcı az önce "Kaydet"e
+  // bastığı için recent user gesture mevcut, bazı tarayıcılarda
+  // izin verilir). Reject olursa muted'e düşüp tekrar dene ve
+  // "Sesi aç" overlay'ini göster.
+  useEffect(() => {
+    if (!video) return;
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = false;
+    v.play().catch(() => {
+      v.muted = true;
+      setIsMuted(true);
+      v.play().catch(() => {});
+    });
+  }, [video]);
+
+  const handleUnmute = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = false;
+    setIsMuted(false);
+    if (v.paused) v.play().catch(() => {});
+  };
+
+  const handleVideoEnded = () => {
+    setVideoCompletedOnce(true);
+    const v = videoRef.current;
+    if (v) {
+      v.currentTime = 0;
+      v.play().catch(() => {});
+    }
+  };
 
   const finish = async (outcome: Outcome) => {
     if (submitting) return;
@@ -83,14 +126,6 @@ export function GatedAdModal({ ad, onComplete, onCancel }: Props) {
       setSubmitting(false);
     }
   };
-
-  const sponsorName: string =
-    ad.creative?.sponsor_name ?? ad.creative?.brand_name ?? "Sponsor";
-  const title: string = ad.creative?.title ?? "Sponsorlu içerik";
-  const body: string | undefined = ad.creative?.body;
-  const cta: string = ad.creative?.cta ?? "Devam et";
-  const image: string | undefined = ad.creative?.image_url;
-  const logo: string | undefined = ad.creative?.logo_url;
 
   return (
     <div
@@ -127,11 +162,41 @@ export function GatedAdModal({ ad, onComplete, onCancel }: Props) {
 
         {/* Creative */}
         <div className="aspect-[9/16] bg-dark-950 flex flex-col">
-          {image ? (
+          {video ? (
+            <div className="relative flex-1 w-full">
+              <video
+                ref={videoRef}
+                src={video}
+                className="w-full h-full object-contain bg-dark-950"
+                autoPlay
+                playsInline
+                onEnded={handleVideoEnded}
+              />
+              {isMuted && (
+                <button
+                  type="button"
+                  onClick={handleUnmute}
+                  className="absolute bottom-3 right-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-black/70 hover:bg-black/85 text-white rounded-full text-xs font-medium backdrop-blur-sm border border-white/10 cursor-pointer"
+                  title="Sesi aç"
+                >
+                  <VolumeX size={14} />
+                  Sesi aç
+                </button>
+              )}
+              {!isMuted && (
+                <span
+                  className="absolute bottom-3 right-3 inline-flex items-center gap-1 px-2 py-1 bg-black/40 text-white/80 rounded-full text-[10px] backdrop-blur-sm"
+                  title="Ses açık"
+                >
+                  <Volume2 size={11} />
+                </span>
+              )}
+            </div>
+          ) : image ? (
             <img
               src={image}
               alt=""
-              className="flex-1 w-full object-cover"
+              className="flex-1 w-full object-contain bg-dark-950"
             />
           ) : (
             <div className="flex-1 flex items-center justify-center p-8 bg-gradient-to-br from-neon-500/10 via-dark-900 to-dark-950">
@@ -151,10 +216,16 @@ export function GatedAdModal({ ad, onComplete, onCancel }: Props) {
 
         {/* Footer / actions */}
         <div className="p-4 space-y-3 border-t border-dark-800">
-          {/* Countdown line */}
+          {/* Status line */}
           <div className="flex items-center gap-2 text-[11px] text-dark-400">
             <Clock size={12} />
-            {minViewReached ? (
+            {video ? (
+              canContinue ? (
+                <span>Reklam tamamlandı</span>
+              ) : (
+                <span>Reklamın bitmesini bekleyin</span>
+              )
+            ) : minViewReached ? (
               <span>Reklam izlendi ({elapsedSec}s)</span>
             ) : (
               <span>
@@ -163,15 +234,18 @@ export function GatedAdModal({ ad, onComplete, onCancel }: Props) {
             )}
           </div>
 
-          {/* Progress bar */}
-          <div className="h-1 bg-dark-800 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-neon-500 transition-[width] duration-300 ease-linear"
-              style={{
-                width: `${Math.min(100, (elapsedMs / Math.max(1, minSec * 1000)) * 100).toFixed(1)}%`,
-              }}
-            />
-          </div>
+          {/* No-video fallback için progress bar (video varsa video kendisi
+              progress göstergesi). */}
+          {!video && (
+            <div className="h-1 bg-dark-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-neon-500 transition-[width] duration-300 ease-linear"
+                style={{
+                  width: `${Math.min(100, (elapsedMs / Math.max(1, minSec * 1000)) * 100).toFixed(1)}%`,
+                }}
+              />
+            </div>
+          )}
 
           {error && (
             <div className="px-2 py-1.5 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">
@@ -179,41 +253,20 @@ export function GatedAdModal({ ad, onComplete, onCancel }: Props) {
             </div>
           )}
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => finish("skipped")}
-              disabled={!skipUnlocked || submitting}
-              className="flex-1 px-3 py-2 bg-dark-800 border border-dark-600 rounded-lg text-sm text-dark-200 hover:bg-dark-700 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {skipUnlocked
-                ? "Atla"
-                : `Atla (${remainingForSkip}s)`}
-            </button>
-            <button
-              type="button"
-              onClick={() => finish("completed")}
-              disabled={!minViewReached || submitting}
-              className="flex-[2] px-3 py-2 bg-neon-500/20 text-neon-400 border border-neon-500/30 rounded-lg text-sm font-medium hover:bg-neon-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {submitting
-                ? "Kaydediliyor…"
-                : minViewReached
-                ? cta
-                : `${cta} (${remainingForComplete}s)`}
-            </button>
-          </div>
-
-          <p className="text-[10px] text-dark-500 leading-relaxed">
-            Reklamları kapatmak için{" "}
-            <Link
-              to="/settings"
-              className="text-neon-400 hover:text-neon-300 inline-flex items-center gap-0.5"
-            >
-              Ayarlar → Sponsorlu içerik göster <SettingsIcon size={9} />
-            </Link>
-            .
-          </p>
+          <button
+            type="button"
+            onClick={() => finish("completed")}
+            disabled={!canContinue || submitting}
+            className="w-full px-3 py-2 bg-neon-500/20 text-neon-400 border border-neon-500/30 rounded-lg text-sm font-medium hover:bg-neon-500/30 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {submitting
+              ? "Kaydediliyor…"
+              : canContinue
+              ? cta
+              : video
+              ? "Reklam oynatılıyor…"
+              : `${cta} (${remainingForComplete}s)`}
+          </button>
         </div>
       </div>
     </div>

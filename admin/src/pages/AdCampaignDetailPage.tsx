@@ -33,7 +33,9 @@ import {
   ListChecks,
   History,
   Users,
+  Eye,
   Target,
+  CalendarPlus,
 } from 'lucide-react'
 import {
   Line,
@@ -53,6 +55,11 @@ import {
   type Placement,
 } from '@/services/api'
 import { CampaignEditorModal } from '@/components/CampaignEditorModal'
+import { ExtendCampaignModal } from '@/components/ExtendCampaignModal'
+import {
+  PlacementPreview,
+  type PreviewCreative,
+} from '@/components/PlacementPreview'
 import { exportCampaignBrandReportPdf } from '@/lib/mediaKit'
 
 // k=1000 is enforced by segment_metrics CHECK; surface that here so
@@ -69,11 +76,7 @@ const METRIC_DEFINITIONS: Record<string, string> = {
   scroll_past: 'Kullanıcı reklamı görüp altına kaydırdı.',
   badge_claim: 'Sponsored badge unlock anında oluşan event.',
   view_complete: 'Gated reklamın tam izlendiği marker.',
-  skip: 'Gated reklamın skip\'lendiği marker.',
   comment: 'Forum native ad altına comment.',
-  open: 'Push notification açıldı.',
-  delivered: 'Push notification ulaştı.',
-  sent: 'Push notification kuyruğa alındı.',
 }
 
 function formatMetricValue(metric: string, agg: Record<string, number>): string {
@@ -108,8 +111,13 @@ export default function AdCampaignDetailPage() {
   const [busy, setBusy] = useState(false)
   const [days, setDays] = useState<7 | 30 | 90>(30)
   const [editing, setEditing] = useState(false)
+  const [extending, setExtending] = useState(false)
   const [duplicating, setDuplicating] = useState<Campaign | null>(null)
   const [exporting, setExporting] = useState(false)
+  type CampaignBadge = Awaited<ReturnType<typeof adminApi.getCampaignBadge>>
+  const [campaignBadge, setCampaignBadge] = useState<CampaignBadge | null>(
+    null,
+  )
 
   const load = async () => {
     if (!id) return
@@ -122,6 +130,18 @@ export default function AdCampaignDetailPage() {
       ])
       setData(d)
       setPlacements(ps)
+      // badge_sponsor placement'ı için preview, kampanyaya bağlı badge'in
+      // gerçek emoji/görselini göstersin diye ayrıca fetch ediyoruz.
+      if (d.campaign.placement_key === 'badge_sponsor') {
+        try {
+          const b = await adminApi.getCampaignBadge(d.campaign.id)
+          setCampaignBadge(b)
+        } catch {
+          setCampaignBadge(null)
+        }
+      } else {
+        setCampaignBadge(null)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Yüklenemedi')
     } finally {
@@ -192,7 +212,6 @@ export default function AdCampaignDetailPage() {
           ends_at: data.campaign.ends_at,
           is_active: data.campaign.is_active,
           is_dry_run: data.campaign.is_dry_run,
-          daily_cap: data.campaign.daily_cap,
           weight: data.campaign.weight,
           target_segment: (data.campaign.target_segment as Record<string, unknown> | null) ?? null,
           creative: data.campaign.creative as unknown as Record<string, unknown>,
@@ -288,6 +307,29 @@ export default function AdCampaignDetailPage() {
           >
             <Pencil size={14} /> Düzenle
           </button>
+          {/* İmpression ekle: kampanyanın kilitli tier CPM'inden ek envanter
+              satın al. Süre değişmez. cap_reached durumunda backend otomatik
+              resume eder. */}
+          {!['rejected', 'completed'].includes(c.status) && (
+            <button
+              onClick={() => setExtending(true)}
+              className={`px-3 py-2 rounded-lg text-sm font-medium border inline-flex items-center gap-1.5 ${
+                c.paused_reason === 'impression_cap_reached'
+                  ? 'bg-neon-500/25 text-neon-300 border-neon-500/40 hover:bg-neon-500/35'
+                  : 'bg-blue-500/15 text-blue-300 border-blue-500/30 hover:bg-blue-500/25'
+              }`}
+              title={
+                c.paused_reason === 'impression_cap_reached'
+                  ? 'Hedef gösterime ulaştı — ek impression eklenince devam eder'
+                  : 'Kilitli tier CPM\'inden ek impression satın al (süre değişmez)'
+              }
+            >
+              <CalendarPlus size={14} />
+              {c.paused_reason === 'impression_cap_reached'
+                ? 'İmpression ekle & devam et'
+                : 'İmpression ekle'}
+            </button>
+          )}
           <button
             onClick={() => setDuplicating(c)}
             className="px-3 py-2 bg-dark-800 border border-dark-600 rounded-lg text-dark-300 hover:bg-dark-700 inline-flex items-center gap-1.5 text-sm"
@@ -324,18 +366,11 @@ export default function AdCampaignDetailPage() {
         />
         <HeadlineCard
           icon={<Clock size={16} />}
-          label={t.daily_cap !== null ? 'Daily cap kullanım' : 'Ortalama dwell'}
+          label="Ortalama dwell"
           value={
-            t.daily_cap !== null
-              ? `${(t.daily_cap_used_pct ?? 0).toFixed(0)}%`
-              : t.avg_dwell_ms === null
+            t.avg_dwell_ms === null
               ? '—'
               : `${(t.avg_dwell_ms / 1000).toFixed(2)}s`
-          }
-          hint={
-            t.daily_cap !== null
-              ? `${t.today_impressions.toLocaleString()} / ${t.daily_cap.toLocaleString()} bugün`
-              : undefined
           }
         />
       </div>
@@ -420,6 +455,32 @@ export default function AdCampaignDetailPage() {
         )}
       </div>
 
+      {/* Creative preview — kullanıcının kampanyayı göreceği biçim. */}
+      <div className="mt-6 bg-dark-800 border border-dark-700 rounded-xl p-5">
+        <h3 className="text-sm font-semibold mb-3 inline-flex items-center gap-2">
+          <Eye size={14} className="text-neon-500" />
+          Reklam önizlemesi
+        </h3>
+        <PlacementPreview
+          placementKey={c.placement_key}
+          creative={
+            // badge_sponsor: campaign.creative boştur, gerçek badge alanları
+            // ayrı bir badges satırında. Fetch edilen badge'i preview'a
+            // çeviriyoruz; image_url öncelikli, yoksa emoji icon.
+            c.placement_key === 'badge_sponsor' && campaignBadge
+              ? ({
+                  title: campaignBadge.name,
+                  body: campaignBadge.description,
+                  icon: campaignBadge.icon,
+                  image_url: campaignBadge.image_url ?? undefined,
+                  sponsor_name:
+                    campaignBadge.sponsor_name ?? c.brand_name,
+                } satisfies PreviewCreative)
+              : (c.creative as unknown as PreviewCreative)
+          }
+        />
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-6">
         {/* Campaign summary */}
         <div className="bg-dark-800 border border-dark-700 rounded-xl p-5">
@@ -430,10 +491,6 @@ export default function AdCampaignDetailPage() {
           <SummaryRow label="Placement" value={c.placement_key} mono />
           <SummaryRow label="Tarih aralığı" value={`${start} → ${end}`} />
           <SummaryRow label="Weight" value={String(c.weight)} />
-          <SummaryRow
-            label="Daily cap"
-            value={c.daily_cap === null ? 'cap yok' : c.daily_cap.toLocaleString()}
-          />
           <SummaryRow
             label="Click URL"
             value={
@@ -586,6 +643,18 @@ export default function AdCampaignDetailPage() {
           onClose={() => setEditing(false)}
           onSaved={() => {
             setEditing(false)
+            void load()
+          }}
+        />
+      )}
+
+      {extending && (
+        <ExtendCampaignModal
+          campaign={c}
+          currentImpressionsTotal={t.impressions}
+          onClose={() => setExtending(false)}
+          onExtended={() => {
+            setExtending(false)
             void load()
           }}
         />

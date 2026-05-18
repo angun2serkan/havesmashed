@@ -236,6 +236,11 @@ export interface ForumTopic {
   topBadgeIcon: string | null;
   liked: boolean;
   createdAt: string;
+  imageUrl: string | null;
+  /** Set ise topic sponsorlu; click → /forum/{id} (normal davranış),
+   *  ama UI'da "Sponsorlu · brandName" gösterilir. */
+  sponsorCampaignId: string | null;
+  sponsorBrandName: string | null;
 }
 
 export interface ForumComment {

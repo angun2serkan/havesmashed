@@ -6,15 +6,18 @@
 // these mocks keep the shape, dimensions, and "Sponsored" labeling
 // honest so admin can validate creative spec choices.
 
-import { ExternalLink, Bell, Pin, Clock } from 'lucide-react'
+import { ExternalLink, Pin, Clock } from 'lucide-react'
 
 export type PreviewCreative = {
   image_url?: string
+  video_url?: string
   title?: string
   body?: string
   cta?: string
   sponsor_name?: string
   logo_url?: string
+  /** Sponsored badge için emoji ikon — image_url yoksa render edilir. */
+  icon?: string
 }
 
 const SAMPLE: Record<string, PreviewCreative> = {
@@ -32,11 +35,6 @@ const SAMPLE: Record<string, PreviewCreative> = {
   forum_thread: {
     title: 'Cinsel sağlık üzerine 5 mit',
     body: 'Uzmanlarla soru-cevap. Sponsored.',
-    sponsor_name: 'Durex',
-  },
-  push: {
-    title: 'Yeni date hediyesi',
-    body: 'Bu hafta sonu için kondom kampanyası bekliyor.',
     sponsor_name: 'Durex',
   },
   gated_interstitial: {
@@ -71,9 +69,8 @@ export function PlacementPreview({
         {placementKey === 'feed_native' && <FeedNativeMock c={c} />}
         {placementKey === 'badge_sponsor' && <BadgeSponsorMock c={c} />}
         {placementKey === 'forum_thread' && <ForumThreadMock c={c} />}
-        {placementKey === 'push' && <PushMock c={c} />}
         {placementKey === 'gated_interstitial' && <GatedInterstitialMock c={c} />}
-        {!['feed_native', 'badge_sponsor', 'forum_thread', 'push', 'gated_interstitial'].includes(
+        {!['feed_native', 'badge_sponsor', 'forum_thread', 'gated_interstitial'].includes(
           placementKey,
         ) && (
           <div className="text-xs text-dark-500 text-center py-8">
@@ -90,10 +87,10 @@ export function PlacementPreview({
 function FeedNativeMock({ c }: { c: PreviewCreative }) {
   return (
     <div className="bg-dark-800 rounded-xl overflow-hidden border border-dark-700">
-      <div className="aspect-[2/1] bg-gradient-to-br from-neon-500/30 to-accent-cyan/20 flex items-center justify-center text-dark-300 text-xs">
+      <div className="aspect-[2/1] bg-dark-900 flex items-center justify-center text-dark-300 text-xs">
         {c.image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={c.image_url} alt="" className="w-full h-full object-cover" />
+          <img src={c.image_url} alt="" className="w-full h-full object-contain" />
         ) : (
           '1200×600 görsel'
         )}
@@ -115,22 +112,39 @@ function FeedNativeMock({ c }: { c: PreviewCreative }) {
 }
 
 function BadgeSponsorMock({ c }: { c: PreviewCreative }) {
+  // Premium tier sponsored badge görünümü — kullanıcının görüceği card
+  // ile aynı (BadgePreview'daki ApprovalQueuePage versiyonu).
+  // Görsel öncelik sırası: image_url > icon > placeholder ★.
   return (
-    <div className="bg-dark-800 rounded-xl p-4 flex items-center gap-3 border border-dark-700">
-      <div className="w-16 h-16 bg-gradient-to-br from-yellow-500 to-orange-500 rounded-xl flex items-center justify-center text-white text-2xl font-bold">
-        ★
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-semibold text-white">
-          {c.title || 'Badge ismi'}
+    <div className="bg-linear-to-br from-dark-950 to-dark-900 border border-fuchsia-500/40 rounded-xl p-5 flex flex-col items-center text-center shadow-[0_0_24px_rgba(217,70,239,0.25)]">
+      <span className="mb-3 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/40 text-[10px] uppercase tracking-widest font-semibold">
+        ★ premium
+      </span>
+      {c.image_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={c.image_url}
+          alt={c.title ?? 'badge'}
+          className="w-20 h-20 object-contain rounded-full mb-3 ring-2 ring-fuchsia-500/60"
+        />
+      ) : (
+        <div className="w-20 h-20 rounded-full bg-fuchsia-500/10 ring-2 ring-fuchsia-500/40 flex items-center justify-center text-4xl mb-3">
+          {c.icon || '★'}
         </div>
-        <div className="text-[10px] text-dark-500 mt-0.5">
-          {c.body || `Presented by ${c.sponsor_name || 'Sponsor'}`}
-        </div>
-        {c.logo_url && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={c.logo_url} alt="" className="h-3 mt-1" />
-        )}
+      )}
+      <h4 className="font-bold text-white text-base">
+        {c.title || 'Badge ismi'}
+      </h4>
+      {c.body && (
+        <p className="text-xs text-dark-300 mt-1">{c.body}</p>
+      )}
+      <div className="mt-4 pt-3 border-t border-dark-700 w-full">
+        <p className="text-[10px] uppercase tracking-wider text-dark-500">
+          Sponsored by
+        </p>
+        <p className="text-xs text-dark-200 mt-0.5">
+          {c.sponsor_name || 'Sponsor'}
+        </p>
       </div>
     </div>
   )
@@ -138,21 +152,31 @@ function BadgeSponsorMock({ c }: { c: PreviewCreative }) {
 
 function ForumThreadMock({ c }: { c: PreviewCreative }) {
   return (
-    <div className="bg-dark-800 rounded-xl p-3 border border-neon-500/30">
-      <div className="flex items-center gap-2 mb-2">
-        <Pin size={12} className="text-neon-400" />
-        <span className="text-[10px] uppercase tracking-wide text-neon-400">
-          Pinned · Sponsored
-        </span>
-      </div>
-      <h4 className="text-sm font-semibold text-white mb-1 line-clamp-2">
-        {c.title || 'Forum başlığı'}
-      </h4>
-      <p className="text-xs text-dark-300 mb-2 line-clamp-3">
-        {c.body || 'Forum açıklaması — paylaşım metni'}
-      </p>
-      <div className="text-[10px] text-dark-500">
-        Presented by {c.sponsor_name || 'Sponsor'}
+    <div className="bg-dark-800 rounded-xl overflow-hidden border border-neon-500/30">
+      {c.image_url && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={c.image_url}
+          alt=""
+          className="w-full aspect-2/1 object-contain bg-dark-950"
+        />
+      )}
+      <div className="p-3">
+        <div className="flex items-center gap-2 mb-2">
+          <Pin size={12} className="text-neon-400" />
+          <span className="text-[10px] uppercase tracking-wide text-neon-400">
+            Pinned · Sponsored
+          </span>
+        </div>
+        <h4 className="text-sm font-semibold text-white mb-1 line-clamp-2">
+          {c.title || 'Forum başlığı'}
+        </h4>
+        <p className="text-xs text-dark-300 mb-2 line-clamp-3">
+          {c.body || 'Forum açıklaması — paylaşım metni'}
+        </p>
+        <div className="text-[10px] text-dark-500">
+          Presented by {c.sponsor_name || 'Sponsor'}
+        </div>
       </div>
     </div>
   )
@@ -167,13 +191,23 @@ function GatedInterstitialMock({ c }: { c: PreviewCreative }) {
         </span>
         <span className="text-[9px] text-dark-500">date_create gate</span>
       </div>
-      <div className="aspect-[9/16] bg-gradient-to-br from-neon-500/15 via-dark-900 to-dark-950 flex items-center justify-center">
-        {c.image_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={c.image_url} alt="" className="w-full h-full object-cover" />
+      <div className="aspect-[9/16] bg-dark-950 flex items-center justify-center">
+        {c.video_url ? (
+          <video
+            src={c.video_url}
+            className="w-full h-full object-contain bg-dark-950"
+            autoPlay
+            muted
+            playsInline
+            loop
+            controls
+            preload="metadata"
+          />
         ) : (
-          <div className="text-center text-dark-400 text-[10px]">
-            1080×1920 görsel
+          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-neon-500/15 via-dark-900 to-dark-950">
+            <div className="text-center text-dark-400 text-[10px]">
+              Video yüklenince burada oynar
+            </div>
           </div>
         )}
       </div>
@@ -190,37 +224,11 @@ function GatedInterstitialMock({ c }: { c: PreviewCreative }) {
         <div className="h-1 bg-dark-800 rounded-full mb-2 overflow-hidden">
           <div className="h-full w-2/5 bg-neon-500" />
         </div>
-        <div className="flex gap-1.5">
-          <button className="flex-1 px-2 py-1.5 bg-dark-800 border border-dark-700 rounded text-[11px] text-dark-400">
-            Atla (5s)
-          </button>
-          <button className="flex-[2] px-2 py-1.5 bg-neon-500/20 text-neon-400 border border-neon-500/30 rounded text-[11px] font-medium">
-            {c.cta || 'Devam et'}
-          </button>
-        </div>
+        <button className="w-full px-2 py-1.5 bg-neon-500/20 text-neon-400 border border-neon-500/30 rounded text-[11px] font-medium">
+          {c.cta || 'Devam et'}
+        </button>
       </div>
     </div>
   )
 }
 
-function PushMock({ c }: { c: PreviewCreative }) {
-  return (
-    <div className="bg-dark-800 rounded-xl p-3 flex items-start gap-3 border border-dark-700">
-      <div className="w-8 h-8 rounded-lg bg-neon-500/20 flex items-center justify-center shrink-0">
-        <Bell size={14} className="text-neon-400" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-0.5">
-          <span className="text-xs font-semibold text-white">havesmashed</span>
-          <span className="text-[10px] text-dark-500">şimdi · sponsored</span>
-        </div>
-        <div className="text-xs font-semibold text-white">
-          {c.title || 'Push başlığı'}
-        </div>
-        <div className="text-[11px] text-dark-300 line-clamp-2">
-          {c.body || 'Push body metni'}
-        </div>
-      </div>
-    </div>
-  )
-}

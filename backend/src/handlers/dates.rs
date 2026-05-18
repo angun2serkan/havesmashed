@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
-use crate::services::ad_token;
+use crate::services::{ad_targeting, ad_token};
 use crate::AppState;
 
 const GATE_PLACEMENT_KEY: &str = "gated_interstitial";
@@ -265,8 +265,8 @@ async fn update_streak(db: &sqlx::PgPool, user_id: Uuid) -> Result<(), AppError>
 // Mirrors the gate decision logic from /api/ads/gate/next so the
 // frontend's "should I open the gate modal?" probe and the
 // authoritative server-side check agree. Returns Ok(()) when the
-// gate should be skipped (placement off, user opted out, new-user
-// grace, no eligible campaign — same shape as `gate_next` returning
+// gate should be skipped (placement off, new-user grace, frequency
+// cap hit, no eligible campaign — same shape as `gate_next` returning
 // `gate_required: false`).
 //
 // When the gate IS required, validates the `X-Ad-Save-Token` header.
@@ -302,10 +302,59 @@ async fn enforce_ad_gate(
         return Ok(());
     }
 
-    // Token must be present. We deliberately don't auto-skip when
-    // there's "no eligible campaign" here — if the user reached this
-    // point in the UI, the modal already decided. Without a token,
-    // fail with the structured error code the frontend recognizes.
+    // Frequency caps — gate_next ile aynı kontroller. Bu kullanıcının
+    // bugünkü/oturumdaki cap'i aştığını gate_next gördü ve modal'ı
+    // açmadı; aynı imza burada da gate'i atlatmalı, yoksa frontend
+    // token'sız gelir ve 403'le karşılaşır.
+    let mut redis = state.redis.clone();
+    let day = ad_targeting::today();
+    let day_key = format!("adcap:{}:{}:day:{}", auth.user_id, GATE_PLACEMENT_KEY, day);
+    if let Some(cap) = rules.get("frequency_cap_per_day").and_then(|v| v.as_u64()) {
+        let count: i64 = redis.get(&day_key).await.unwrap_or(0);
+        if (count as u64) >= cap {
+            return Ok(());
+        }
+    }
+    if let Some(cap) = rules
+        .get("frequency_cap_per_user_per_session")
+        .and_then(|v| v.as_u64())
+    {
+        let count: i64 = redis.get(&day_key).await.unwrap_or(0);
+        if (count as u64) >= cap {
+            return Ok(());
+        }
+    }
+
+    // Eligible campaign var mı? Hiç aktif kampanya yoksa veya
+    // targeting hiçbirine uymuyorsa gate_next modal'ı açmaz; aynı
+    // şekilde token istemiyoruz.
+    let candidate_rows = sqlx::query(
+        r#"
+        SELECT target_segment
+        FROM ad_campaigns
+        WHERE placement_key = $1
+          AND status = 'active'
+          AND deleted_at IS NULL
+          AND is_dry_run = FALSE
+          AND NOW() BETWEEN starts_at AND ends_at
+        "#,
+    )
+    .bind(GATE_PLACEMENT_KEY)
+    .fetch_all(&state.db)
+    .await?;
+    if candidate_rows.is_empty() {
+        return Ok(());
+    }
+    let profile = ad_targeting::load_profile(&state.db, &mut redis, auth.user_id).await?;
+    let any_eligible = candidate_rows.iter().any(|row| {
+        let seg: Option<serde_json::Value> = row.try_get("target_segment").ok();
+        ad_targeting::matches_segment(&profile, seg.as_ref())
+    });
+    if !any_eligible {
+        return Ok(());
+    }
+
+    // Token must be present.
     let token = headers
         .get("x-ad-save-token")
         .and_then(|v| v.to_str().ok())
@@ -328,8 +377,8 @@ async fn enforce_ad_gate(
     }
 
     // Single-use: SETNX on jti. Token TTL is short (60s) so we expire
-    // the marker on the same horizon.
-    let mut redis = state.redis.clone();
+    // the marker on the same horizon. `redis` zaten eligibility
+    // kontrolünde clone edilmişti, tekrar clone gerekmez.
     let used_key = format!("adsave:{}", claims.jti);
     let first_use: bool = redis
         .set_nx::<_, _, bool>(&used_key, "1")
