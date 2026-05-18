@@ -171,8 +171,6 @@ export type Brand = {
 export type BrandGrant = {
   brand_id: string
   placement_key: string
-  max_concurrent: number | null
-  monthly_impression_cap: number | null
   notes: string | null
   granted_at: string
 }
@@ -216,8 +214,6 @@ export const brandsApi = {
     brand_id: string,
     body: {
       placement_key: string
-      max_concurrent?: number | null
-      monthly_impression_cap?: number | null
       notes?: string | null
     },
   ) =>
@@ -358,6 +354,12 @@ export const adminApi = {
   // Auth test
   getMetrics: () => request<{ totalUsers: number; totalDates: number; dailyActiveUsers: number }>('/admin/metrics'),
 
+  // Tags (public; sponsored badge criteria builder kullanır)
+  getTags: () =>
+    request<Array<{ id: number; name: string; category: string; is_predefined: boolean }>>(
+      '/tags',
+    ),
+
   // Cities
   getCities: (country_code?: string) => {
     const params = country_code ? `?country_code=${encodeURIComponent(country_code)}` : '';
@@ -381,7 +383,7 @@ export const adminApi = {
     const params = gender ? `?gender=${encodeURIComponent(gender)}` : '';
     return request<BadgeRow[]>(`/admin/badges${params}`);
   },
-  createBadge: (data: { name: string; description: string; icon: string; category: string; threshold: number; image_url?: string; gender?: string }) =>
+  createBadge: (data: { name: string; description: string; icon: string; category: string; threshold: number; image_url?: string; gender?: string; criteria?: BadgeCriteria | null }) =>
     request<{ id: number }>('/admin/badges', { method: 'POST', body: JSON.stringify(data) }),
   updateBadge: (id: number, data: Record<string, unknown>) =>
     request<{ id: number }>(`/admin/badges/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
@@ -756,6 +758,8 @@ export type BadgeRow = {
   sponsor_click_url: string | null
   sponsor_logo_url: string | null
   sponsor_click_count: number
+  /** Sponsored badge ile aynı şema; NULL ise legacy category/threshold unlock. */
+  criteria: BadgeCriteria | null
 }
 
 export type Placement = {
@@ -807,6 +811,7 @@ export type TargetSegment = {
 
 export type CampaignCreative = {
   image_url?: string
+  video_url?: string
   title?: string
   body?: string
   cta?: string
@@ -831,7 +836,6 @@ export type Campaign = {
   target_segment: TargetSegment | null
   starts_at: string
   ends_at: string
-  daily_cap: number | null
   weight: number
   status: CampaignStatus
   is_active: boolean
@@ -840,6 +844,8 @@ export type Campaign = {
   pricing_model: 'cpm' | 'cpc' | 'flat' | null
   unit_price_cents: number | null
   total_budget_cents: number | null
+  target_impressions: number | null
+  duration_months: 1 | 3 | 6 | 12 | null
   spent_cents: number
   progress_percent: number | null
   paused_reason: string | null
@@ -847,6 +853,45 @@ export type Campaign = {
   updated_at: string | null
   impressions_total: number
   clicks_total: number
+}
+
+export type BadgeDateFilter = {
+  gender?: ('male' | 'female' | 'other')[]
+  age_range?: string[]
+  height_range?: string[]
+  country_code?: string[]
+  city_id?: number[]
+  min_rating?: number
+  min_face_rating?: number
+  min_body_rating?: number
+  min_chat_rating?: number
+  /** Tag ID'lerinden EN AZ BİRİNİN date'te bulunması gerekir (OR semantiği). */
+  any_tags?: number[]
+  /** ISO date (YYYY-MM-DD). */
+  date_after?: string
+  date_before?: string
+}
+
+export type BadgeCondition =
+  | { type: 'count'; min: number; filter: BadgeDateFilter }
+  | {
+      type: 'distinct'
+      field: 'country_code' | 'city_id'
+      min: number
+      filter?: BadgeDateFilter
+    }
+  | {
+      type: 'avg_rating'
+      field: 'rating' | 'face_rating' | 'body_rating' | 'chat_rating'
+      min_avg: number
+      min_sample: number
+      filter?: BadgeDateFilter
+    }
+  | { type: 'friend_count'; min: number }
+
+/** Sponsored badge zengin kriter spec'i. Tüm conditions AND ile birleşir. */
+export type BadgeCriteria = {
+  conditions: BadgeCondition[]
 }
 
 export type BadgeSpec = {
@@ -857,7 +902,13 @@ export type BadgeSpec = {
   threshold: number
   image_url?: string | null
   gender?: 'male' | 'female' | 'both' | null
+  /** Opsiyonel. Verilirse unlock evaluator bu spec'i değerlendirir; legacy
+   *  category/threshold yolu kullanılmaz. */
+  criteria?: BadgeCriteria | null
 }
+
+export type DurationMonths = 1 | 3 | 6 | 12
+export const DURATION_MONTH_OPTIONS: DurationMonths[] = [1, 3, 6, 12]
 
 export type CampaignCreateInput = {
   brand_id?: string | null
@@ -866,13 +917,11 @@ export type CampaignCreateInput = {
   click_url: string
   target_segment?: TargetSegment | null
   starts_at: string
-  ends_at: string
-  daily_cap?: number | null
   weight?: number
   is_dry_run?: boolean
-  pricing_model?: 'cpm' | 'cpc' | 'flat' | null
-  unit_price_cents?: number | null
-  total_budget_cents?: number | null
+  /** Tier paketi (1/3/6/12). Süre, included impression ve CPM bundan gelir;
+   *  brand serbest impression girişi yapmaz. */
+  duration_months: DurationMonths
   /** placement_key='badge_sponsor' için zorunlu. Brand kendi badge'ini tasarlar. */
   badge_spec?: BadgeSpec
 }
@@ -883,7 +932,6 @@ export type CampaignUpdateInput = Partial<{
   target_segment: TargetSegment | null
   starts_at: string
   ends_at: string
-  daily_cap: number | null
   weight: number
   is_dry_run: boolean
   pricing_model: 'cpm' | 'cpc' | 'flat' | null
@@ -894,6 +942,8 @@ export type CampaignUpdateInput = Partial<{
 export type AffiliateLink = {
   id: string
   slug: string
+  /** Operatör-okur etiket; NULL ise UI slug'a fallback yapar. */
+  name: string | null
   brand_id: string | null
   brand_name: string
   target_url: string
@@ -911,6 +961,7 @@ export type AffiliateLink = {
 export type AffiliateCreateInput = {
   slug: string
   brand_id?: string | null
+  name?: string | null
   target_url: string
   utm_campaign?: string | null
   notes?: string | null
@@ -921,6 +972,7 @@ export type AffiliateUpdateInput = Partial<{
   utm_campaign: string | null
   notes: string | null
   is_active: boolean
+  name: string | null
 }>
 
 export type AuditLogEntry = {
@@ -946,8 +998,6 @@ export type CampaignDetail = {
     ctr: number
     avg_dwell_ms: number | null
     today_impressions: number
-    daily_cap: number | null
-    daily_cap_used_pct: number | null
     metric_aggregates: Record<string, number>
   }
   daily_series: Array<{
@@ -968,4 +1018,220 @@ export type CampaignDetail = {
     segment_value: string
     cohort_size: number
   }>
+}
+
+// ════════════════════════════════════════════════════════════
+// Brand wallet (BRAND_BALANCE_PLAN §7.1)
+// ════════════════════════════════════════════════════════════
+
+export type WalletTxKind =
+  | 'topup'
+  | 'purchase'
+  | 'extend'
+  | 'refund'
+  | 'adjust'
+
+export type WalletTransaction = {
+  id: string
+  kind: WalletTxKind
+  amount_cents: number
+  balance_after_cents: number
+  ref_kind: string | null
+  ref_id: string | null
+  description: string | null
+  actor_label: string
+  admin_user_id?: string | null
+  impersonating_brand_id?: string | null
+  created_at: string
+}
+
+export type WalletSummary = {
+  brand_id: string
+  balance_cents: number
+  recent_transactions: WalletTransaction[]
+}
+
+export const walletApi = {
+  get: (brandId: string) =>
+    request<WalletSummary>(`/admin/brands/${brandId}/wallet`),
+
+  listTransactions: (
+    brandId: string,
+    params?: { kind?: string; ref_kind?: string; limit?: number; offset?: number },
+  ) => {
+    const qs = new URLSearchParams()
+    if (params?.kind) qs.set('kind', params.kind)
+    if (params?.ref_kind) qs.set('ref_kind', params.ref_kind)
+    if (params?.limit != null) qs.set('limit', String(params.limit))
+    if (params?.offset != null) qs.set('offset', String(params.offset))
+    const q = qs.toString()
+    return request<{
+      items: WalletTransaction[]
+      limit: number
+      offset: number
+    }>(`/admin/brands/${brandId}/wallet/transactions${q ? `?${q}` : ''}`)
+  },
+
+  topup: (brandId: string, amount_cents: number, description: string) =>
+    request<WalletTransaction>(`/admin/brands/${brandId}/wallet/topup`, {
+      method: 'POST',
+      body: JSON.stringify({ amount_cents, description }),
+    }),
+
+  adjust: (brandId: string, amount_cents: number, description: string) =>
+    request<WalletTransaction>(`/admin/brands/${brandId}/wallet/adjust`, {
+      method: 'POST',
+      body: JSON.stringify({ amount_cents, description }),
+    }),
+
+  refund: (
+    brandId: string,
+    amount_cents: number,
+    description: string,
+    campaign_id?: string,
+  ) =>
+    request<WalletTransaction>(`/admin/brands/${brandId}/wallet/refund`, {
+      method: 'POST',
+      body: JSON.stringify({ amount_cents, description, campaign_id }),
+    }),
+}
+
+// ════════════════════════════════════════════════════════════
+// Placement pricing
+// ════════════════════════════════════════════════════════════
+
+export type PricingHistoryEntry = {
+  id: string
+  pricing_model: 'cpm'
+  unit_price_cents: number
+  duration_months: DurationMonths
+  included_impressions: number
+  effective_from: string
+  effective_to: string | null
+  actor_label: string
+  notes: string | null
+  created_at: string
+  is_active: boolean
+}
+
+export type ActivePricing = {
+  placement_key: string
+  pricing_model: 'cpm'
+  unit_price_cents: number
+  duration_months: DurationMonths
+  included_impressions: number
+  effective_from: string
+}
+
+export const pricingApi = {
+  getForPlacement: (placement_key: string) =>
+    request<{ placement_key: string; history: PricingHistoryEntry[] }>(
+      `/admin/ads/placements/${placement_key}/pricing`,
+    ),
+
+  update: (
+    placement_key: string,
+    unit_price_cents: number,
+    duration_months: DurationMonths,
+    included_impressions: number,
+    notes?: string,
+  ) =>
+    request<{
+      id: string
+      placement_key: string
+      pricing_model: 'cpm'
+      unit_price_cents: number
+      duration_months: DurationMonths
+      included_impressions: number
+      effective_from: string
+      is_active: boolean
+    }>(`/admin/ads/placements/${placement_key}/pricing`, {
+      method: 'POST',
+      body: JSON.stringify({
+        unit_price_cents,
+        duration_months,
+        included_impressions,
+        notes,
+      }),
+    }),
+
+  listActive: () => request<ActivePricing[]>('/admin/ads/pricing/active'),
+}
+
+// ════════════════════════════════════════════════════════════
+// Cron health
+// ════════════════════════════════════════════════════════════
+
+export type CronStatus = {
+  name: string
+  last_run: string | null
+  stale: boolean
+  stale_threshold_hours: number
+}
+
+export type CronHealthLogEntry = {
+  id: string
+  cron_name: string
+  event: 'ok' | 'stale_observed' | 'recovered' | 'error'
+  detail: string | null
+  observed_at: string
+}
+
+export const cronHealthApi = {
+  status: () => request<{ crons: CronStatus[] }>('/admin/cron-health/status'),
+
+  listLog: (params?: {
+    cron_name?: string
+    event?: string
+    limit?: number
+    offset?: number
+  }) => {
+    const qs = new URLSearchParams()
+    if (params?.cron_name) qs.set('cron_name', params.cron_name)
+    if (params?.event) qs.set('event', params.event)
+    if (params?.limit != null) qs.set('limit', String(params.limit))
+    if (params?.offset != null) qs.set('offset', String(params.offset))
+    const q = qs.toString()
+    return request<{
+      items: CronHealthLogEntry[]
+      limit: number
+      offset: number
+    }>(`/admin/cron-health/log${q ? `?${q}` : ''}`)
+  },
+
+  trigger: (name: string) =>
+    request<{
+      cron_name: string
+      triggered_at: string
+      summary: { processed: number; paused: number }
+    }>(`/admin/cron-health/trigger/${name}`, { method: 'POST' }),
+}
+
+// ════════════════════════════════════════════════════════════
+// Campaign extension
+// ════════════════════════════════════════════════════════════
+
+export const campaignExtendApi = {
+  /**
+   * Kampanyaya ek impression satın alır. Süre değişmez; fiyat kampanyanın
+   * kilitli tier CPM'inden (`unit_price_cents`) kullanılır. Yeni süre lazımsa
+   * brand "Yeni Kampanya" ile o anki tier fiyatından fresh paket açar.
+   */
+  extend: (
+    campaignId: string,
+    extra_impressions: number,
+    description?: string,
+  ) =>
+    request<{
+      campaign_id: string
+      ends_at: string
+      new_target_impressions: number
+      new_total_budget_cents: number
+      extra_cost_cents: number
+      balance_after_cents: number
+      resumed_from_cap_reached: boolean
+    }>(`/admin/ads/campaigns/${campaignId}/extend`, {
+      method: 'POST',
+      body: JSON.stringify({ extra_impressions, description }),
+    }),
 }

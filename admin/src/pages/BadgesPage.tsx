@@ -1,7 +1,8 @@
 import { useEffect, useState, useMemo, useRef, type FormEvent, type ChangeEvent } from 'react'
 import { Plus, Pencil, Trash2, X, Check, Upload, Filter, Smile, Sparkles, Award, MousePointerClick } from 'lucide-react'
-import { adminApi, type BadgeRow } from '@/services/api'
+import { adminApi, type BadgeRow, type BadgeCriteria } from '@/services/api'
 import { BadgeSponsorModal } from '@/components/BadgeSponsorModal'
+import { BadgeCriteriaBuilder } from '@/components/BadgeCriteriaBuilder'
 import EmojiPicker, { Theme } from 'emoji-picker-react'
 
 type SponsorStat = {
@@ -38,11 +39,13 @@ export default function BadgesPage() {
   const [sponsorStats, setSponsorStats] = useState<Record<number, SponsorStat>>({})
   const [sponsorEditId, setSponsorEditId] = useState<number | null>(null)
   const [form, setForm] = useState(emptyForm)
+  const [criteria, setCriteria] = useState<BadgeCriteria | null>(null)
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const [editId, setEditId] = useState<number | null>(null)
   const [editForm, setEditForm] = useState(emptyForm)
+  const [editCriteria, setEditCriteria] = useState<BadgeCriteria | null>(null)
   const [editUploading, setEditUploading] = useState(false)
   const [genderFilter, setGenderFilter] = useState<GenderFilter>('all')
   const [onlySponsored, setOnlySponsored] = useState(false)
@@ -136,8 +139,12 @@ export default function BadgesPage() {
         threshold: parseInt(form.threshold),
         gender: form.gender,
         ...(form.image_url ? { image_url: form.image_url } : {}),
+        // Criteria boşsa hiç gönderme (backend optional). Spec varsa legacy
+        // category/threshold yerine evaluator bu spec'i değerlendirir.
+        ...(criteria && criteria.conditions.length > 0 ? { criteria } : {}),
       })
       setForm(emptyForm)
+      setCriteria(null)
       fetchBadges()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create badge')
@@ -167,10 +174,17 @@ export default function BadgesPage() {
       image_url: badge.image_url ?? '',
       gender: badge.gender ?? 'both',
     })
+    setEditCriteria(badge.criteria ?? null)
   }
 
   async function handleEditSave(id: number) {
     try {
+      // criteria three-state: builder boş döndüyse (null veya boş conditions)
+      // backend'e `null` gönderip legacy moda dönmesini sağlıyoruz; aksi
+      // halde spec'i yazıyoruz. Hep gönderiyoruz çünkü builder, kullanıcı
+      // criteria'yı temizleyince null'a düşüyor.
+      const criteriaToSend =
+        editCriteria && editCriteria.conditions.length > 0 ? editCriteria : null
       await adminApi.updateBadge(id, {
         name: editForm.name,
         description: editForm.description,
@@ -179,8 +193,10 @@ export default function BadgesPage() {
         threshold: parseInt(editForm.threshold),
         gender: editForm.gender,
         ...(editForm.image_url ? { image_url: editForm.image_url } : {}),
+        criteria: criteriaToSend,
       })
       setEditId(null)
+      setEditCriteria(null)
       fetchBadges()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update badge')
@@ -280,6 +296,7 @@ export default function BadgesPage() {
             required
             className={`${inputClass} w-full`}
           />
+          <BadgeCriteriaBuilder value={criteria} onChange={setCriteria} />
           <div className="flex gap-3 items-center">
             <div className="flex-1">
               <div className="flex items-center gap-3">
@@ -299,7 +316,7 @@ export default function BadgesPage() {
                     <img
                       src={form.image_url}
                       alt="Preview"
-                      className="w-8 h-8 rounded object-cover border border-dark-600"
+                      className="w-8 h-8 rounded object-contain bg-dark-900 border border-dark-600"
                     />
                     <span className="text-xs text-dark-400 truncate max-w-[200px]">{form.image_url}</span>
                     <button
@@ -468,7 +485,7 @@ export default function BadgesPage() {
                       <img
                         src={editForm.image_url}
                         alt="Preview"
-                        className="w-6 h-6 rounded object-cover border border-dark-600"
+                        className="w-6 h-6 rounded object-contain bg-dark-900 border border-dark-600"
                       />
                       <button
                         type="button"
@@ -480,6 +497,7 @@ export default function BadgesPage() {
                     </div>
                   )}
                 </div>
+                <BadgeCriteriaBuilder value={editCriteria} onChange={setEditCriteria} />
                 <div className="flex gap-2 pt-1">
                   <button
                     onClick={() => handleEditSave(badge.id)}

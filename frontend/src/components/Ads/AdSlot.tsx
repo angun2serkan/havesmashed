@@ -12,7 +12,7 @@
 // never sees our origin in the Referer header.
 
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Pin } from "lucide-react";
 import { api } from "@/services/api";
 
 type NextAd = {
@@ -135,6 +135,8 @@ export function AdSlot({ placementKey, className }: AdSlotProps) {
     <div ref={slotRef} className={className}>
       {ad.placement_key === "feed_native" ? (
         <FeedNativeRender ad={ad} onClick={handleClick} />
+      ) : ad.placement_key === "forum_thread" ? (
+        <ForumThreadRender ad={ad} onClick={handleClick} />
       ) : (
         <GenericRender ad={ad} onClick={handleClick} />
       )}
@@ -153,17 +155,19 @@ function FeedNativeRender({
 }) {
   const { creative } = ad;
   return (
+    // Sosyal feed kartı boyutu: max-w-xl (576px). Geniş ekranda 2:1
+    // görsel 2000px+ olup viewport'u kaplamasın diye dış kap'ı sınırlıyoruz.
     <button
       type="button"
       onClick={onClick}
-      className="w-full text-left bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded-xl overflow-hidden transition-colors group"
+      className="w-full max-w-xl text-left bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded-xl overflow-hidden transition-colors group"
     >
       {creative.image_url && (
         <div className="aspect-2/1 bg-dark-900 overflow-hidden">
           <img
             src={creative.image_url}
             alt=""
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+            className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-500"
           />
         </div>
       )}
@@ -196,6 +200,57 @@ function FeedNativeRender({
   );
 }
 
+// Forum başlık listesinde "pinned + Sponsorlu" satır olarak görünür.
+// Tasarım organik forum row'unun yerini tutar (görsel + başlık +
+// preview metni) ama belirgin "Sponsorlu" işareti taşır.
+// max-w-xl: feed_native ile aynı 576px cap — geniş ekranda 2:1 görsel
+// viewport'u kaplamasın diye.
+function ForumThreadRender({
+  ad,
+  onClick,
+}: {
+  ad: NextAd;
+  onClick: () => void;
+}) {
+  const { creative } = ad;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full max-w-xl text-left bg-dark-900 hover:bg-dark-800 border border-neon-500/30 rounded-xl overflow-hidden transition-colors group"
+    >
+      {creative.image_url && (
+        <div className="aspect-2/1 bg-dark-950 overflow-hidden">
+          <img
+            src={creative.image_url}
+            alt=""
+            className="w-full h-full object-contain"
+          />
+        </div>
+      )}
+      <div className="p-4">
+        <div className="flex items-center gap-2 mb-1.5">
+          <Pin size={12} className="text-neon-400" />
+          <span className="text-[10px] uppercase tracking-wide text-neon-400">
+            Sponsorlu
+            {creative.sponsor_name && ` · ${creative.sponsor_name}`}
+          </span>
+        </div>
+        {creative.title && (
+          <h4 className="text-sm font-semibold text-white mb-1 line-clamp-2">
+            {creative.title}
+          </h4>
+        )}
+        {creative.body && (
+          <p className="text-xs text-dark-300 line-clamp-2">
+            {creative.body}
+          </p>
+        )}
+      </div>
+    </button>
+  );
+}
+
 function GenericRender({
   ad,
   onClick,
@@ -208,19 +263,30 @@ function GenericRender({
     <button
       type="button"
       onClick={onClick}
-      className="w-full text-left bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded-xl p-4"
+      className="w-full text-left bg-dark-800 hover:bg-dark-750 border border-dark-700 rounded-xl overflow-hidden"
     >
-      <div className="text-[10px] uppercase tracking-wide text-dark-500 mb-1">
-        Sponsorlu{creative.sponsor_name && ` · ${creative.sponsor_name}`}
+      {creative.image_url && (
+        <div className="aspect-2/1 bg-dark-900 overflow-hidden">
+          <img
+            src={creative.image_url}
+            alt=""
+            className="w-full h-full object-contain"
+          />
+        </div>
+      )}
+      <div className="p-4">
+        <div className="text-[10px] uppercase tracking-wide text-dark-500 mb-1">
+          Sponsorlu{creative.sponsor_name && ` · ${creative.sponsor_name}`}
+        </div>
+        {creative.title && (
+          <h4 className="text-sm font-semibold text-white mb-1">
+            {creative.title}
+          </h4>
+        )}
+        {creative.body && (
+          <p className="text-xs text-dark-300">{creative.body}</p>
+        )}
       </div>
-      {creative.title && (
-        <h4 className="text-sm font-semibold text-white mb-1">
-          {creative.title}
-        </h4>
-      )}
-      {creative.body && (
-        <p className="text-xs text-dark-300">{creative.body}</p>
-      )}
     </button>
   );
 }

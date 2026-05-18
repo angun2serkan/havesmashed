@@ -158,8 +158,8 @@ pub fn matches_segment(profile: &UserAdProfile, segment: Option<&Value>) -> bool
     true
 }
 
-/// Build a millisecond-precision wall-clock used for the day boundary
-/// when computing `daily_cap` consumption from `ad_metrics`.
+/// UTC date'i döner. Sadece `ad_metrics` günlük segmentasyonu için
+/// kullanılan day-boundary yardımcısı.
 pub fn today() -> chrono::NaiveDate {
     Utc::now().date_naive()
 }

@@ -3,6 +3,10 @@ import { Link } from 'react-router-dom'
 import { ClipboardCheck, Check, X, ChevronDown, ChevronUp } from 'lucide-react'
 import { adminApi, type Campaign } from '@/services/api'
 import StatusBadge from '@/components/StatusBadge'
+import {
+  PlacementPreview,
+  type PreviewCreative,
+} from '@/components/PlacementPreview'
 
 export default function ApprovalQueuePage() {
   const [items, setItems] = useState<Campaign[] | null>(null)
@@ -159,6 +163,15 @@ function ApprovalRow({
 
       {isBadgeSponsor && showPreview && (
         <BadgePreview campaignId={c.id} brandName={c.brand_name} />
+      )}
+
+      {!isBadgeSponsor && showPreview && (
+        <div className="mt-4 pt-4 border-t border-dark-700">
+          <PlacementPreview
+            placementKey={c.placement_key}
+            creative={c.creative as unknown as PreviewCreative}
+          />
+        </div>
       )}
     </div>
   )

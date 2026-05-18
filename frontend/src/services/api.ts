@@ -189,21 +189,20 @@ export const api = {
           creative: any;
           click_url: string;
           min_view_seconds: number;
-          skip_after_seconds: number;
           gate_token: string;
         }
     >(`/ads/gate/next?context=${encodeURIComponent(context)}`),
 
   adGateComplete: (
     gateToken: string,
-    outcome: "completed" | "skipped",
+    outcome: "completed",
     completionMs?: number,
   ) =>
     request<{
       save_token: string;
       expires_in: number;
       context: string;
-      outcome: "completed" | "skipped";
+      outcome: "completed";
     }>("/ads/gate/complete", {
       method: "POST",
       body: JSON.stringify({
@@ -546,6 +545,9 @@ export const api = {
         topBadgeIcon: t.top_badge_icon ?? null,
         liked: t.liked ?? false,
         createdAt: t.created_at,
+        imageUrl: t.image_url ?? null,
+        sponsorCampaignId: t.sponsor_campaign_id ?? null,
+        sponsorBrandName: t.sponsor_brand_name ?? null,
       })),
       next_cursor: raw.next_cursor,
     };
@@ -570,6 +572,9 @@ export const api = {
         topBadgeIcon: raw.topic.top_badge_icon ?? null,
         liked: raw.topic.liked ?? false,
         createdAt: raw.topic.created_at,
+        imageUrl: raw.topic.image_url ?? null,
+        sponsorCampaignId: raw.topic.sponsor_campaign_id ?? null,
+        sponsorBrandName: raw.topic.sponsor_brand_name ?? null,
       },
       comments: (raw.comments ?? []).map((c: any) => ({
         id: c.id,
@@ -578,7 +583,7 @@ export const api = {
         body: c.body,
         depth: c.depth,
         likeCount: c.like_count,
-        authorNickname: c.author_nickname ?? "Anonim",
+        authorNickname: c.nickname ?? c.author_nickname ?? "Anonim",
         topBadgeIcon: c.top_badge_icon ?? null,
         liked: c.liked ?? false,
         createdAt: c.created_at,

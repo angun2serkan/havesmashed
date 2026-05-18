@@ -13,9 +13,8 @@
 // EditPlacementModal), refresh.
 
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import {
-  ArrowLeft,
   Pencil,
   Power,
   RefreshCw,
@@ -39,9 +38,22 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts'
-import { adminApi, type Placement, type PlacementDetail } from '@/services/api'
+import {
+  adminApi,
+  pricingApi,
+  DURATION_MONTH_OPTIONS,
+  type Campaign,
+  type DurationMonths,
+  type Placement,
+  type PlacementDetail,
+  type PricingHistoryEntry,
+} from '@/services/api'
+import { effectiveRole, useAdminStore } from '@/stores/adminStore'
 import { EditPlacementModal } from '@/components/EditPlacementModal'
+import { ExtendCampaignModal } from '@/components/ExtendCampaignModal'
 import { PlacementPreview } from '@/components/PlacementPreview'
+import { UpdatePricingModal } from '@/components/UpdatePricingModal'
+import { formatTRY } from '@/lib/formatTRY'
 
 // What each `metrics_collected` value means in operator-facing Turkish.
 // Values resolve from the metric_aggregates blob (see formatMetricValue).
@@ -58,16 +70,15 @@ const METRIC_DEFINITIONS: Record<string, string> = {
     'Sponsored badge\'in unlock anında oluşan event. Sponsored badge placement\'ı için marker.',
   view_complete:
     'Gated/zorunlu reklamın tam izlendiği marker — min_view_seconds tamamlandığında ateşlenir.',
-  skip:
-    'Gated/zorunlu reklamın skip\'lendiği marker (skip_after_seconds geçtiğinde butona basıldı).',
   comment:
     'Forum native ad altına comment bırakıldı (engagement signal).',
-  open:
-    'Push notification reklamı açıldı.',
-  delivered:
-    'Push notification cihaza ulaştı (open\'dan önceki adım).',
-  sent:
-    'Push notification kuyruğa alındı (delivery rate hesabı için).',
+}
+
+// Backend round_up_to_100_tl ile aynı yuvarlama — paket toplam fiyatı için.
+function roundUpTo100TL(cents: number): number {
+  if (cents <= 0) return 0
+  const unit = 10_000
+  return Math.ceil(cents / unit) * unit
 }
 
 function formatMetricValue(
@@ -92,12 +103,20 @@ function formatMetricValue(
 
 export default function AdPlacementDetailPage() {
   const { key } = useParams<{ key: string }>()
-  const navigate = useNavigate()
+  const me = useAdminStore((s) => s.me)
+  const role = effectiveRole(me)
+  const isSuper = role === 'super_admin'
   const [data, setData] = useState<PlacementDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [pricingEdit, setPricingEdit] = useState<DurationMonths | null>(null)
+  const [pricingHistory, setPricingHistory] = useState<PricingHistoryEntry[]>([])
+  // Brand view: bu placement'taki kendi açık kampanyaları. listCampaigns
+  // brand_admin context'inde otomatik brand-scoped — diğer brand'ler görünmez.
+  const [brandCampaigns, setBrandCampaigns] = useState<Campaign[]>([])
+  const [extendTarget, setExtendTarget] = useState<Campaign | null>(null)
   const [days, setDays] = useState<7 | 30 | 90>(30)
   const [viewport, setViewport] = useState<'mobile' | 'desktop'>('mobile')
 
@@ -106,8 +125,33 @@ export default function AdPlacementDetailPage() {
     setLoading(true)
     setError(null)
     try {
-      const d = await adminApi.getPlacementDetail(key, days)
+      const detail = adminApi.getPlacementDetail(key, days)
+      // Super: fiyat tarihçesi. Brand: tarihçe endpoint'i super-only, geç.
+      const pricing = isSuper
+        ? pricingApi.getForPlacement(key).catch(() => ({
+            placement_key: key,
+            history: [] as PricingHistoryEntry[],
+          }))
+        : Promise.resolve({ placement_key: key, history: [] as PricingHistoryEntry[] })
+      // Brand: kendi açık kampanyalarını filtrele (status=all client-filter).
+      const campaigns = isSuper
+        ? Promise.resolve<Campaign[]>([])
+        : adminApi
+            .listCampaigns({ placement_key: key })
+            .catch(() => [] as Campaign[])
+
+      const [d, pr, cs] = await Promise.all([detail, pricing, campaigns])
       setData(d)
+      setPricingHistory(pr.history)
+      const now = Date.now()
+      setBrandCampaigns(
+        cs.filter(
+          (c) =>
+            c.deleted_at === null &&
+            !['rejected', 'completed'].includes(c.status) &&
+            new Date(c.ends_at).getTime() > now,
+        ),
+      )
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Yüklenemedi')
     } finally {
@@ -175,11 +219,8 @@ export default function AdPlacementDetailPage() {
 
   if (error && !data) {
     return (
-      <div>
-        <BackLink />
-        <div className="mt-4 px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
-          {error}
-        </div>
+      <div className="px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
+        {error}
       </div>
     )
   }
@@ -191,10 +232,8 @@ export default function AdPlacementDetailPage() {
 
   return (
     <div>
-      <BackLink />
-
       {/* Header */}
-      <div className="mt-3 flex items-start justify-between gap-3 flex-wrap">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <Layers size={16} className="text-neon-500" />
@@ -226,25 +265,29 @@ export default function AdPlacementDetailPage() {
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
-          <button
-            onClick={onToggleEnabled}
-            disabled={busy}
-            title={p.is_globally_enabled ? 'Globalde kapat' : 'Globalde aç'}
-            className={`px-3 py-2 rounded-lg border transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 text-sm ${
-              p.is_globally_enabled
-                ? 'bg-accent-green/10 border-accent-green/30 text-accent-green hover:bg-accent-green/20'
-                : 'bg-dark-700 border-dark-600 text-dark-400 hover:bg-dark-600'
-            }`}
-          >
-            <Power size={14} />
-            {p.is_globally_enabled ? 'Kapat' : 'Aç'}
-          </button>
-          <button
-            onClick={() => setEditing(true)}
-            className="px-3 py-2 bg-neon-500/20 text-neon-400 border border-neon-500/30 rounded-lg text-sm font-medium hover:bg-neon-500/30 inline-flex items-center gap-1.5"
-          >
-            <Pencil size={14} /> Düzenle
-          </button>
+          {isSuper && (
+            <>
+              <button
+                onClick={onToggleEnabled}
+                disabled={busy}
+                title={p.is_globally_enabled ? 'Globalde kapat' : 'Globalde aç'}
+                className={`px-3 py-2 rounded-lg border transition-colors disabled:opacity-50 inline-flex items-center gap-1.5 text-sm ${
+                  p.is_globally_enabled
+                    ? 'bg-accent-green/10 border-accent-green/30 text-accent-green hover:bg-accent-green/20'
+                    : 'bg-dark-700 border-dark-600 text-dark-400 hover:bg-dark-600'
+                }`}
+              >
+                <Power size={14} />
+                {p.is_globally_enabled ? 'Kapat' : 'Aç'}
+              </button>
+              <button
+                onClick={() => setEditing(true)}
+                className="px-3 py-2 bg-neon-500/20 text-neon-400 border border-neon-500/30 rounded-lg text-sm font-medium hover:bg-neon-500/30 inline-flex items-center gap-1.5"
+              >
+                <Pencil size={14} /> Düzenle
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -483,6 +526,228 @@ export default function AdPlacementDetailPage() {
         )}
       </div>
 
+      {/* Brand view: kendi açık paketleri + ek paket al CTA. */}
+      {!isSuper && (
+        <section className="mt-6 bg-dark-900 border border-dark-700 rounded-lg">
+          <div className="p-4 border-b border-dark-800">
+            <h2 className="font-semibold text-white">Paketleriniz</h2>
+            <p className="text-xs text-dark-400">
+              Bu placement'taki açık kampanyalarınız. Yeni kampanya açmak
+              için <Link to="/ads/campaigns" className="text-neon-400 hover:underline">Kampanyalar</Link>{' '}
+              sayfasını kullanın.
+            </p>
+          </div>
+
+          {brandCampaigns.length === 0 ? (
+            <div className="p-6 text-center text-sm text-dark-400">
+              Bu placement'ta açık kampanyanız yok.
+              <div className="mt-2">
+                <Link
+                  to="/ads/campaigns"
+                  className="inline-block text-xs px-3 py-1.5 rounded bg-neon-500/15 border border-neon-500/30 text-neon-400 hover:bg-neon-500/25"
+                >
+                  Kampanyalar →
+                </Link>
+              </div>
+            </div>
+          ) : (
+            <ul className="divide-y divide-dark-800">
+              {brandCampaigns.map((c) => {
+                const target = c.target_impressions ?? 0
+                const done = c.impressions_total ?? 0
+                const pct = target > 0 ? Math.min(100, (done / target) * 100) : null
+                const capReached = c.paused_reason === 'impression_cap_reached'
+                return (
+                  <li key={c.id} className="p-4 flex items-center justify-between gap-4 flex-wrap">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Link
+                          to={`/ads/campaigns/${c.id}`}
+                          className="text-sm font-medium text-white hover:text-neon-400"
+                        >
+                          {c.brand_name}
+                        </Link>
+                        {c.duration_months != null && (
+                          <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-dark-800 text-dark-300">
+                            {c.duration_months} ay paketi
+                          </span>
+                        )}
+                        {capReached && (
+                          <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-neon-500/20 text-neon-300">
+                            hedef doldu
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-dark-400 mt-1 font-mono">
+                        {done.toLocaleString()} / {target.toLocaleString()} impression
+                        {pct != null && ` · %${pct.toFixed(1)}`}
+                      </div>
+                      <div className="text-[10px] text-dark-500 mt-0.5">
+                        Bitiş: {new Date(c.ends_at).toLocaleDateString('tr-TR')}
+                        {c.unit_price_cents != null &&
+                          ` · CPM kilidi ${formatTRY(c.unit_price_cents)} / 1k`}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setExtendTarget(c)}
+                      className={`text-xs px-3 py-1.5 rounded border ${
+                        capReached
+                          ? 'bg-neon-500/25 border-neon-500/40 text-neon-300 hover:bg-neon-500/35'
+                          : 'bg-blue-500/15 border-blue-500/30 text-blue-300 hover:bg-blue-500/25'
+                      }`}
+                    >
+                      Ek paket al
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {/* Fiyatlandırma (CPM) — super_admin only: 4 ay-tier matrisi.
+          Her tier'in aktif satırı + tarihçesi (collapsible). */}
+      {isSuper && (
+      <section className="mt-6 bg-dark-900 border border-dark-700 rounded-lg">
+        <div className="p-4 border-b border-dark-800">
+          <h2 className="font-semibold text-white">Fiyatlandırma</h2>
+          <p className="text-xs text-dark-400">
+            CPM birim fiyatı (TL / 1.000 impression) ay-tier başına. Brand
+            kampanya/uzatma satın alırken seçtiği süreye göre tier fiyatı
+            uygulanır.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 p-4">
+          {DURATION_MONTH_OPTIONS.map((months) => {
+            const active = pricingHistory.find(
+              (h) => h.duration_months === months && h.is_active,
+            )
+            const totalCents = active
+              ? roundUpTo100TL(
+                  Math.ceil(
+                    (active.included_impressions * active.unit_price_cents) / 1000,
+                  ),
+                )
+              : null
+            return (
+              <div
+                key={months}
+                className="bg-dark-950 border border-dark-700 rounded-lg p-3 flex flex-col gap-2"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs uppercase tracking-wider text-dark-400">
+                    {months} ay paketi
+                  </span>
+                  <button
+                    onClick={() => setPricingEdit(months)}
+                    className="text-[11px] px-2 py-1 rounded bg-neon-500/15 hover:bg-neon-500/30 text-neon-400 border border-neon-500/30"
+                  >
+                    Güncelle
+                  </button>
+                </div>
+                {active ? (
+                  <>
+                    <div className="text-2xl font-bold text-white font-mono">
+                      {totalCents != null ? formatTRY(totalCents) : '—'}
+                    </div>
+                    <div className="text-[11px] text-dark-300">
+                      <span className="font-mono">
+                        {active.included_impressions.toLocaleString()}
+                      </span>{' '}
+                      impression dahil
+                    </div>
+                    <div className="text-[11px] text-dark-500">
+                      CPM: {formatTRY(active.unit_price_cents)} / 1.000 imp
+                    </div>
+                    <p className="text-[10px] text-dark-600">
+                      {`Etkin ${new Date(active.effective_from).toLocaleDateString('tr-TR')}'den beri`}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-[11px] text-dark-500">Paket tanımlı değil</p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="border-t border-dark-800">
+          <div className="px-4 py-3 text-xs text-dark-400 uppercase tracking-wider">
+            Tüm fiyat tarihçesi
+          </div>
+          <table className="w-full text-sm">
+            <thead className="text-xs text-dark-400 uppercase">
+              <tr>
+                <th className="text-left px-4 py-2">Tier</th>
+                <th className="text-left px-4 py-2">Durum</th>
+                <th className="text-right px-4 py-2">Impression</th>
+                <th className="text-right px-4 py-2">CPM</th>
+                <th className="text-right px-4 py-2">Paket Toplamı</th>
+                <th className="text-left px-4 py-2">Başlangıç</th>
+                <th className="text-left px-4 py-2">Bitiş</th>
+                <th className="text-left px-4 py-2">Not</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pricingHistory.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-4 py-4 text-center text-dark-400">
+                    Henüz fiyat tanımlanmamış.
+                  </td>
+                </tr>
+              )}
+              {pricingHistory.map((row) => {
+                const total = roundUpTo100TL(
+                  Math.ceil((row.included_impressions * row.unit_price_cents) / 1000),
+                )
+                return (
+                  <tr key={row.id} className="border-t border-dark-800">
+                    <td className="px-4 py-2 text-dark-200 font-mono text-xs">
+                      {row.duration_months} ay
+                    </td>
+                    <td className="px-4 py-2">
+                      {row.is_active ? (
+                        <span className="px-1.5 py-0.5 rounded bg-accent-green/20 text-accent-green text-[10px] uppercase">
+                          aktif
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.5 rounded bg-dark-800 text-dark-400 text-[10px] uppercase">
+                          eski
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-right text-dark-200 font-mono tabular-nums">
+                      {row.included_impressions.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-white">
+                      {formatTRY(row.unit_price_cents)}{' '}
+                      <span className="text-dark-500">/ 1k</span>
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-white">
+                      {formatTRY(total)}
+                    </td>
+                    <td className="px-4 py-2 text-dark-300 text-xs whitespace-nowrap">
+                      {new Date(row.effective_from).toLocaleString('tr-TR')}
+                    </td>
+                    <td className="px-4 py-2 text-dark-300 text-xs whitespace-nowrap">
+                      {row.effective_to
+                        ? new Date(row.effective_to).toLocaleString('tr-TR')
+                        : '—'}
+                    </td>
+                    <td className="px-4 py-2 text-dark-400 text-xs">
+                      {row.notes ?? '—'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      )}
+
       {/* Config blobs (collapsible-ish — just compact rendering) */}
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
         <ConfigBlock title="display_rules" data={p.display_rules} />
@@ -496,6 +761,37 @@ export default function AdPlacementDetailPage() {
           onSaved={onEditSaved}
         />
       )}
+      {extendTarget && (
+        <ExtendCampaignModal
+          campaign={extendTarget}
+          currentImpressionsTotal={extendTarget.impressions_total ?? 0}
+          onClose={() => setExtendTarget(null)}
+          onExtended={() => {
+            setExtendTarget(null)
+            void load()
+          }}
+        />
+      )}
+
+      {pricingEdit !== null && (() => {
+        const active = pricingHistory.find(
+          (h) => h.is_active && h.duration_months === pricingEdit,
+        )
+        return (
+          <UpdatePricingModal
+            placementKey={p.key}
+            placementName={p.display_name}
+            durationMonths={pricingEdit}
+            currentUnitPriceCents={active?.unit_price_cents ?? null}
+            currentIncludedImpressions={active?.included_impressions ?? null}
+            onClose={() => setPricingEdit(null)}
+            onSaved={() => {
+              setPricingEdit(null)
+              void load()
+            }}
+          />
+        )
+      })()}
 
       {error && data && (
         <div className="mt-4 px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-400">
@@ -505,17 +801,6 @@ export default function AdPlacementDetailPage() {
     </div>
   )
 
-  // ── inline helpers ────────────────────────────────────────
-  function BackLink() {
-    return (
-      <button
-        onClick={() => navigate('/ads/placements')}
-        className="inline-flex items-center gap-1.5 text-xs text-dark-400 hover:text-white"
-      >
-        <ArrowLeft size={12} /> Reklam türleri
-      </button>
-    )
-  }
 }
 
 function DaysSelector({

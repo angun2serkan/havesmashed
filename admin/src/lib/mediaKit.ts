@@ -628,7 +628,6 @@ export type CampaignReportInput = {
     ends_at: string
     is_active: boolean
     is_dry_run: boolean
-    daily_cap: number | null
     weight: number
     target_segment: Record<string, unknown> | null
     creative: Record<string, unknown>
@@ -640,8 +639,6 @@ export type CampaignReportInput = {
     ctr: number
     avg_dwell_ms: number | null
     today_impressions: number
-    daily_cap: number | null
-    daily_cap_used_pct: number | null
   }
   daily_series: Array<{
     date: string
@@ -740,16 +737,6 @@ export async function exportCampaignBrandReportPdf(input: CampaignReportInput) {
     t.avg_dwell_ms === null ? '—' : `${(t.avg_dwell_ms / 1000).toFixed(2)}s`,
   )
 
-  if (t.daily_cap !== null) {
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(10)
-    doc.setTextColor(100, 100, 100)
-    doc.text(
-      `Daily cap: ${fmtNum(t.daily_cap)} · today used ${t.today_impressions.toLocaleString()} (${(t.daily_cap_used_pct ?? 0).toFixed(0)}%)`,
-      margin,
-      370,
-    )
-  }
   pageFooter(doc, pageW, pageH, margin)
 
   // ── Daily trend table ──

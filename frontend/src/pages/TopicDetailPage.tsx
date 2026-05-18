@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Heart, Reply, Lock, Flag } from "lucide-react";
+import { ArrowLeft, Heart, Reply, Lock, Flag, Pin } from "lucide-react";
 import { api } from "@/services/api";
 import { Button } from "@/components/ui/Button";
 import { ReportModal } from "@/components/Forum/ReportModal";
@@ -169,22 +169,46 @@ export function TopicDetailPage() {
       </button>
 
       {/* Topic */}
-      <div className="bg-dark-900 rounded-xl p-5 mb-6">
+      <div
+        className={`rounded-xl p-5 mb-6 ${
+          topic.sponsorCampaignId
+            ? "bg-dark-900 border border-neon-500/30"
+            : "bg-dark-900"
+        }`}
+      >
         <div className="flex items-center gap-2 mb-3 flex-wrap">
-          {topic.isPinned && <span className="text-xs">📌</span>}
-          {topic.isLocked && <span className="text-xs">🔒</span>}
-          <span
-            className={`inline-block px-1.5 py-0.5 text-[10px] font-medium rounded-full ${categoryBadgeClass(topic.category)}`}
-          >
-            {topic.category}
-          </span>
-          <span className="text-[10px] text-dark-500">
-            {topic.topBadgeIcon && <span className="mr-0.5">{topic.topBadgeIcon}</span>}
-            {topic.isAnonymous ? "Anonim" : topic.authorNickname ?? "Anonim"}
-          </span>
+          {topic.sponsorCampaignId ? (
+            <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-neon-400 font-semibold">
+              <Pin size={11} /> Sponsorlu
+              {topic.sponsorBrandName && (
+                <span className="text-dark-400">· {topic.sponsorBrandName}</span>
+              )}
+            </span>
+          ) : (
+            <>
+              {topic.isPinned && <span className="text-xs">📌</span>}
+              {topic.isLocked && <span className="text-xs">🔒</span>}
+              <span
+                className={`inline-block px-1.5 py-0.5 text-[10px] font-medium rounded-full ${categoryBadgeClass(topic.category)}`}
+              >
+                {topic.category}
+              </span>
+              <span className="text-[10px] text-dark-500">
+                {topic.topBadgeIcon && <span className="mr-0.5">{topic.topBadgeIcon}</span>}
+                {topic.isAnonymous ? "Anonim" : topic.authorNickname ?? "Anonim"}
+              </span>
+            </>
+          )}
           <span className="text-[10px] text-dark-500">{relativeTime(topic.createdAt)}</span>
         </div>
 
+        {topic.imageUrl && (
+          <img
+            src={topic.imageUrl}
+            alt=""
+            className="w-full max-w-2xl aspect-2/1 object-contain bg-dark-950 rounded-lg mb-4"
+          />
+        )}
         <h1 className="text-xl font-bold text-white mb-3">{topic.title}</h1>
         <p className="text-sm text-dark-300 whitespace-pre-wrap mb-4">{topic.body}</p>
 

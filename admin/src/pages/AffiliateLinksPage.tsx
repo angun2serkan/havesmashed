@@ -66,6 +66,7 @@ export default function AffiliateLinksPage() {
       if (!q) return true
       return (
         it.slug.toLowerCase().includes(q) ||
+        (it.name?.toLowerCase().includes(q) ?? false) ||
         it.brand_name.toLowerCase().includes(q) ||
         it.target_url.toLowerCase().includes(q)
       )
@@ -135,7 +136,7 @@ export default function AffiliateLinksPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="slug, brand veya URL ara…"
+          placeholder="isim, slug, brand veya URL ara…"
           className="flex-1 max-w-md bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-neon-500"
         />
         <label className="inline-flex items-center gap-2 text-sm text-dark-300 cursor-pointer">
@@ -171,7 +172,7 @@ export default function AffiliateLinksPage() {
           <table className="w-full text-sm">
             <thead className="bg-dark-900 text-dark-400 uppercase text-[10px] tracking-wider">
               <tr>
-                <th className="text-left px-4 py-3 font-medium">Slug & Brand</th>
+                <th className="text-left px-4 py-3 font-medium">İsim & Slug</th>
                 <th className="text-left px-4 py-3 font-medium">Target URL</th>
                 <th className="text-left px-4 py-3 font-medium">Durum</th>
                 <th className="text-right px-4 py-3 font-medium">30g click</th>
@@ -186,8 +187,11 @@ export default function AffiliateLinksPage() {
                   className={`hover:bg-dark-850 ${!link.is_active ? 'opacity-50' : ''}`}
                 >
                   <td className="px-4 py-3">
-                    <div className="font-mono text-neon-400 text-xs">{link.slug}</div>
-                    <div className="text-white font-medium mt-0.5">{link.brand_name}</div>
+                    <div className="text-white font-medium">
+                      {link.name ?? <span className="text-dark-500 italic">İsimsiz</span>}
+                    </div>
+                    <div className="font-mono text-neon-400 text-xs mt-0.5">/go/{link.slug}</div>
+                    <div className="text-[10px] text-dark-500 mt-0.5">{link.brand_name}</div>
                     {link.utm_campaign && (
                       <div className="text-[10px] text-dark-500 mt-0.5 font-mono">
                         utm_campaign={link.utm_campaign}

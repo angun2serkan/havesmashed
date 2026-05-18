@@ -8,6 +8,7 @@
 import { useState, type ChangeEvent } from 'react'
 import { X, Upload, Trash2 } from 'lucide-react'
 import { adminApi, type BadgeRow } from '@/services/api'
+import { UrlWithAffiliatePicker } from './UrlWithAffiliatePicker'
 
 export function BadgeSponsorModal({
   badge,
@@ -126,13 +127,12 @@ export function BadgeSponsorModal({
 
           <Field
             label="Click URL"
-            hint="Genelde affiliate link (örn. https://haveismash.com/go/durex-promo)"
+            hint="Elle URL girin veya sağdaki butonla affiliate link'lerinizden seçin."
           >
-            <input
+            <UrlWithAffiliatePicker
               value={clickUrl}
-              onChange={(e) => setClickUrl(e.target.value)}
+              onChange={setClickUrl}
               placeholder="https://example.com/landing"
-              className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-neon-500"
             />
           </Field>
 

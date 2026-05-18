@@ -383,7 +383,7 @@ export function DateEntryForm() {
   };
 
   const handleGateComplete = async (
-    outcome: "completed" | "skipped",
+    outcome: "completed",
     elapsedMs: number,
   ) => {
     if (!gatedAd || !pendingPayload) return;

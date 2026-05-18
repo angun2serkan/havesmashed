@@ -1,27 +1,36 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Building2, Plus } from 'lucide-react'
+import { Building2, Plus, Wallet } from 'lucide-react'
 import {
   brandStatsApi,
+  walletApi,
   type BrandStatsSummary,
+  type WalletSummary,
 } from '@/services/api'
 import { effectiveBrandId, useAdminStore } from '@/stores/adminStore'
 import StatusBadge from '@/components/StatusBadge'
 import BudgetProgressBar from '@/components/BudgetProgressBar'
+import { formatTRY, formatTRYSigned } from '@/lib/formatTRY'
 
 export default function BrandPortalDashboard() {
   const me = useAdminStore((s) => s.me)
   const brandId = effectiveBrandId(me)
   const [summary, setSummary] = useState<BrandStatsSummary | null>(null)
+  const [wallet, setWallet] = useState<WalletSummary | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
     if (!brandId) return
     setSummary(null)
+    setWallet(null)
     brandStatsApi
       .summary(brandId, 30)
       .then(setSummary)
       .catch((e) => setError(e instanceof Error ? e.message : 'load failed'))
+    walletApi
+      .get(brandId)
+      .then(setWallet)
+      .catch(() => setWallet(null))
   }, [brandId])
 
   if (!brandId) {
@@ -73,6 +82,68 @@ export default function BrandPortalDashboard() {
               value={`%${(summary.totals.ctr * 100).toFixed(2)}`}
             />
           </div>
+
+          {wallet && (
+            <section className="bg-dark-900 border border-dark-700 rounded-lg mb-6">
+              <div className="flex items-center justify-between p-4 border-b border-dark-800">
+                <div className="flex items-center gap-2">
+                  <Wallet size={16} className="text-neon-500" />
+                  <div>
+                    <h2 className="font-semibold text-white">Cüzdan</h2>
+                    <p className="text-xs text-dark-400">
+                      Bakiyenizden paket alabilirsiniz; yükleme platform
+                      operatörü tarafından yapılır.
+                    </p>
+                  </div>
+                </div>
+                <Link
+                  to="/wallet"
+                  className="text-xs text-neon-400 hover:text-neon-300 underline"
+                >
+                  İşlem geçmişi →
+                </Link>
+              </div>
+
+              <div className="p-4 flex items-end justify-between gap-4 flex-wrap">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider text-dark-500 mb-1">
+                    Bakiye
+                  </p>
+                  <p className="text-3xl font-bold text-white font-mono">
+                    {formatTRY(wallet.balance_cents)}
+                  </p>
+                </div>
+                {wallet.recent_transactions.length > 0 && (
+                  <ul className="text-xs text-dark-400 space-y-0.5 min-w-55">
+                    {wallet.recent_transactions.slice(0, 3).map((tx) => {
+                      const signed = formatTRYSigned(tx.amount_cents)
+                      return (
+                        <li
+                          key={tx.id}
+                          className="flex items-center justify-between gap-2"
+                        >
+                          <span className="font-mono uppercase text-[10px] text-dark-500">
+                            {tx.kind}
+                          </span>
+                          <span
+                            className={`font-mono ${
+                              signed.sign === '+'
+                                ? 'text-accent-green'
+                                : signed.sign === '-'
+                                  ? 'text-red-400'
+                                  : ''
+                            }`}
+                          >
+                            {signed.text}
+                          </span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            </section>
+          )}
 
           {/* Budget section */}
           <section className="bg-dark-900 border border-dark-700 rounded-lg p-5 mb-6">

@@ -419,6 +419,7 @@ pub async fn check_and_award_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<
     let all_badges = sqlx::query(
         r#"
         SELECT b.id, b.name, b.category, b.threshold, b.gender,
+               b.criteria,
                b.campaign_id, c.placement_key, c.status AS campaign_status,
                c.is_dry_run
         FROM badges b
@@ -444,24 +445,42 @@ pub async fn check_and_award_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<
         let category: String = badge.get("category");
         let threshold: i32 = badge.get("threshold");
         let gender: String = badge.get("gender");
+        let criteria_json: Option<serde_json::Value> = badge.get("criteria");
 
-        let qualifies = match (category.as_str(), gender.as_str()) {
-            ("dates", "male") => female_date_count >= threshold as i64,
-            ("dates", "female") => male_date_count >= threshold as i64,
-            ("dates", "lgbt") => {
-                if threshold == 1 {
-                    has_both || has_other
-                } else {
-                    (has_both || has_other) && lgbt_qualifying_count >= threshold as i64
+        // Sponsored badge'lerin zengin kriter spec'i: NULL ise legacy yol,
+        // NOT NULL ise badge_criteria::evaluate. Parse hatası badge'i unlock
+        // ettirmez (defansif).
+        let qualifies = if let Some(json) = criteria_json {
+            match serde_json::from_value::<crate::services::badge_criteria::BadgeCriteria>(json) {
+                Ok(spec) => {
+                    crate::services::badge_criteria::evaluate(db, user_id, &spec)
+                        .await
+                        .unwrap_or(false)
                 }
-            },
-            ("explore", _) => {
-                if badge_id <= 15 { country_count >= threshold as i64 }
-                else { city_count >= threshold as i64 }
-            },
-            ("quality", _) => avg_rating.map_or(false, |r| r >= threshold as f64),
-            ("social", _) => friend_count >= threshold as i64,
-            _ => false,
+                Err(e) => {
+                    tracing::error!(badge_id, error = %e, "badge criteria parse failed");
+                    false
+                }
+            }
+        } else {
+            match (category.as_str(), gender.as_str()) {
+                ("dates", "male") => female_date_count >= threshold as i64,
+                ("dates", "female") => male_date_count >= threshold as i64,
+                ("dates", "lgbt") => {
+                    if threshold == 1 {
+                        has_both || has_other
+                    } else {
+                        (has_both || has_other) && lgbt_qualifying_count >= threshold as i64
+                    }
+                },
+                ("explore", _) => {
+                    if badge_id <= 15 { country_count >= threshold as i64 }
+                    else { city_count >= threshold as i64 }
+                },
+                ("quality", _) => avg_rating.map_or(false, |r| r >= threshold as f64),
+                ("social", _) => friend_count >= threshold as i64,
+                _ => false,
+            }
         };
 
         if qualifies {

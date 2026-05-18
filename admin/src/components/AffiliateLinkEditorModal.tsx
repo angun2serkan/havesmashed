@@ -34,6 +34,7 @@ export function AffiliateLinkEditorModal({
   const role = effectiveRole(me)
   const isSuper = role === 'super_admin'
 
+  const [name, setName] = useState(link?.name ?? '')
   const [slug, setSlug] = useState(link?.slug ?? '')
   const [brandId, setBrandId] = useState(link?.brand_id ?? '')
   const [brands, setBrands] = useState<Brand[]>([])
@@ -53,6 +54,9 @@ export function AffiliateLinkEditorModal({
   const validate = (): string | null => {
     if (isCreate && !SLUG_RE.test(slug.trim())) {
       return 'Slug 3-40 karakter, lowercase alphanumeric ve dash; uçlar alphanumeric olmalı'
+    }
+    if (name.trim().length > 80) {
+      return 'İsim en fazla 80 karakter olabilir'
     }
     const url = targetUrl.trim()
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -77,20 +81,29 @@ export function AffiliateLinkEditorModal({
     setError(null)
     try {
       if (isCreate) {
+        // Brand_admin için UTM field gizli; analytics değerini kaybetmeyelim
+        // diye slug'ı default utm_campaign olarak gönderiyoruz. Super_admin
+        // explicit girer.
+        const normalizedSlug = slug.trim().toLowerCase()
+        const utmValue = isSuper ? utm.trim() || null : normalizedSlug
         const body: AffiliateCreateInput = {
-          slug: slug.trim().toLowerCase(),
+          slug: normalizedSlug,
           brand_id: isSuper ? brandId || null : undefined,
+          name: name.trim() || null,
           target_url: targetUrl.trim(),
-          utm_campaign: utm.trim() || null,
+          utm_campaign: utmValue,
           notes: notes.trim() || null,
         }
         await adminApi.createAffiliate(body)
       } else {
+        // Edit mode: brand_admin UTM görmediği için mevcut değeri olduğu
+        // gibi koru (super edit eder).
         const body: AffiliateUpdateInput = {
           target_url: targetUrl.trim(),
-          utm_campaign: utm.trim() || null,
+          ...(isSuper ? { utm_campaign: utm.trim() || null } : {}),
           notes: notes.trim() || null,
           is_active: isActive,
+          name: name.trim() || null,
         }
         await adminApi.updateAffiliate(link.id, body)
       }
@@ -122,6 +135,19 @@ export function AffiliateLinkEditorModal({
         </div>
 
         <div className="p-5 space-y-4">
+          <Field
+            label="İsim"
+            hint="Kampanya URL alanlarında bu link'i hızlı seçmek için okunabilir etiket. Boş bırakırsanız slug görünür."
+          >
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={80}
+              placeholder="Q2 2026 Promo"
+              className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-neon-500"
+            />
+          </Field>
+
           <Field label="Slug" hint="URL'in son kısmı: haveismash.com/go/<slug>">
             <input
               value={slug}
@@ -133,28 +159,30 @@ export function AffiliateLinkEditorModal({
             />
           </Field>
 
-          <Field label="Brand">
-            {isCreate && isSuper ? (
-              <select
-                value={brandId}
-                onChange={(e) => setBrandId(e.target.value)}
-                className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-neon-500"
-              >
-                <option value="">— (organik / brand entity yok)</option>
-                {brands.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.display_name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                value={link?.brand_name ?? 'Kendi brand’iniz'}
-                disabled
-                className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm opacity-60"
-              />
-            )}
-          </Field>
+          {isSuper && (
+            <Field label="Brand">
+              {isCreate ? (
+                <select
+                  value={brandId}
+                  onChange={(e) => setBrandId(e.target.value)}
+                  className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-neon-500"
+                >
+                  <option value="">— (organik / brand entity yok)</option>
+                  {brands.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.display_name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={link?.brand_name ?? ''}
+                  disabled
+                  className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm opacity-60"
+                />
+              )}
+            </Field>
+          )}
 
           <Field label="Target URL" hint="Brand'in landing sayfası">
             <input
@@ -165,15 +193,17 @@ export function AffiliateLinkEditorModal({
             />
           </Field>
 
-          <Field label="UTM campaign (opsiyonel)" hint="Hedef URL'e ?utm_campaign=… olarak eklenir">
-            <input
-              value={utm}
-              onChange={(e) => setUtm(e.target.value)}
-              maxLength={80}
-              placeholder="q1-2026"
-              className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-neon-500"
-            />
-          </Field>
+          {isSuper && (
+            <Field label="UTM campaign (opsiyonel)" hint="Hedef URL'e ?utm_campaign=… olarak eklenir">
+              <input
+                value={utm}
+                onChange={(e) => setUtm(e.target.value)}
+                maxLength={80}
+                placeholder="q1-2026"
+                className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-neon-500"
+              />
+            </Field>
+          )}
 
           <Field label="Notlar (opsiyonel)" hint="Sadece operatör için">
             <textarea

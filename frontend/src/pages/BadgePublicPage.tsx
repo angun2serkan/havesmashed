@@ -102,7 +102,7 @@ export function BadgePublicPage() {
               <img
                 src={badge.image_url}
                 alt={badge.name}
-                className={`w-28 h-28 mx-auto rounded-full object-cover ring-2 ${ringColor}`}
+                className={`w-28 h-28 mx-auto rounded-full object-contain bg-dark-900 ring-2 ${ringColor}`}
               />
             ) : (
               <div
