@@ -1,7 +1,8 @@
 use axum::Router;
-use http::HeaderValue;
+use http::header::{AUTHORIZATION, CONTENT_TYPE};
+use http::{HeaderName, HeaderValue, Method};
 use sqlx::postgres::PgPoolOptions;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
@@ -53,6 +54,30 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
     };
 
+    // SEC-101: cookie-based auth artık aktif (admin_access_token /
+    // admin_refresh_token httpOnly cookies). Bu yüzden CORS:
+    //   * allow_credentials(true) zorunlu — yoksa browser cookie göndermez
+    //   * allow_origin wildcard kullanılamaz; explicit liste
+    //   * allow_methods/headers explicit (Any + credentials kombinasyonu
+    //     CORS spec'i tarafından reddedilir)
+    //
+    // Dev: localhost:5173 (user) + localhost:5174 (admin), HTTP + HTTPS
+    // (mkcert kullanılırsa). Prod: ALLOWED_ORIGINS env değişkeninden
+    // virgülle ayrılmış liste.
+    let allowed_headers: Vec<HeaderName> = vec![
+        CONTENT_TYPE,
+        AUTHORIZATION,
+        HeaderName::from_static("x-impersonate-brand"),
+    ];
+    let allowed_methods = [
+        Method::GET,
+        Method::POST,
+        Method::PUT,
+        Method::DELETE,
+        Method::PATCH,
+        Method::OPTIONS,
+    ];
+
     let cors = if app_env == "production" {
         let origins: Vec<HeaderValue> = std::env::var("ALLOWED_ORIGINS")
             .unwrap_or_default()
@@ -63,13 +88,27 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("CORS allowed origins: {:?}", origins);
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(Any)
-            .allow_headers(Any)
+            .allow_credentials(true)
+            .allow_methods(allowed_methods)
+            .allow_headers(allowed_headers)
     } else {
+        let dev_origins: Vec<HeaderValue> = [
+            "http://localhost:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:5174",
+            // SEC-A01 ile mkcert HTTPS dev'e geçildiğinde lazım olacak:
+            "https://localhost:5173",
+            "https://localhost:5174",
+        ]
+        .into_iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
         CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any)
+            .allow_origin(dev_origins)
+            .allow_credentials(true)
+            .allow_methods(allowed_methods)
+            .allow_headers(allowed_headers)
     };
 
     // Background tasks: hourly Redis→Postgres drain, daily aggregator,

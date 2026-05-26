@@ -4,45 +4,50 @@ const API_BASE = '/api'
 
 // ── Auth-aware fetch wrapper ──────────────────────────────────
 //
-// Auth strategy (BUG-1 fix sonrası):
-//   1. If `accessToken` is set → `Authorization: Bearer <token>`
-//      (hem brand_admin hem env-super JWT; env-super sub=Uuid::nil()
-//      sentinel taşır.)
-//   2. Else → no auth headers (login endpoints).
+// SEC-101: Auth transport artık httpOnly cookie. Tüm fetch çağrıları
+// `credentials: 'include'` ile gönderilir; tarayıcı `admin_access_token`
+// cookie'sini otomatik ekler. Bu sayede:
+//   - JavaScript token'a erişemez (XSS senaryosunda exfil mümkün değil)
+//   - localStorage'da artık JWT tutulmuyor
+//   - Refresh tamamen cookie üzerinden: body boş, refresh cookie path'i
+//     (`/api/admin/auth/refresh`) ile gönderilir.
 //
-// Legacy `apiKey`/`X-Admin-Key` yolu tamamen kaldırıldı; super_admin
-// password'u localStorage'da düz metin saklanmıyor.
+// `isAuthenticated` artık server-truth — `me()` çağrısı 200 dönüyorsa
+// auth var. Store'da `accessToken`/`refreshToken` alanları yok.
 //
-// On 401, we try refresh once. If refresh also 401's, we clear auth
-// state and let the auth guard navigate back to /login.
+// 401 → tek refresh dene → yine 401 ise logout (auth guard /login'e atar).
 
 let isRefreshing = false
 let refreshQueue: Array<() => void> = []
 
 async function attemptRefresh(): Promise<boolean> {
-  const refresh = useAdminStore.getState().refreshToken
-  if (!refresh) return false
-
-  // Coalesce concurrent refresh attempts so we only call /refresh once
   if (isRefreshing) {
     await new Promise<void>((resolve) => refreshQueue.push(resolve))
-    return useAdminStore.getState().accessToken !== null
+    return useAdminStore.getState().isAuthenticated
   }
   isRefreshing = true
 
   try {
+    // Refresh cookie path'i `/api/admin/auth/refresh` — tarayıcı sadece
+    // bu URL'e refresh cookie'sini ekler. Body bilerek boş.
     const res = await fetch(`${API_BASE}/admin/auth/refresh`, {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refresh }),
+      body: '{}',
     })
-    const json = await res.json()
-    if (!res.ok || !json.success) {
+    if (!res.ok) {
       useAdminStore.getState().logout()
       return false
     }
-    const { access_token, refresh_token } = json.data
-    useAdminStore.getState().setTokens(access_token, refresh_token)
+    const json = await res.json()
+    if (!json.success) {
+      useAdminStore.getState().logout()
+      return false
+    }
+    // Yeni cookies backend tarafından Set-Cookie ile geldi; store'da
+    // ayrıca token tutmuyoruz, sadece authenticated flag'i taze tut.
+    useAdminStore.getState().markAuthenticated()
     return true
   } finally {
     isRefreshing = false
@@ -54,24 +59,28 @@ async function attemptRefresh(): Promise<boolean> {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const doFetch = async (): Promise<Response> => {
-    const { accessToken, impersonatingBrandId } = useAdminStore.getState()
+    const { impersonatingBrandId } = useAdminStore.getState()
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(options.headers as Record<string, string>),
     }
-    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`
     // Env-super impersonation: backend her request'te header'dan okur,
     // state tutmaz. brand_admin JWT'sinde impersonation yok — backend
     // sub != Uuid::nil() ise header'ı bilerek ignore eder.
     if (impersonatingBrandId)
       headers['X-Impersonate-Brand'] = impersonatingBrandId
-    return fetch(`${API_BASE}${path}`, { ...options, headers })
+    return fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+      credentials: 'include',
+    })
   }
 
   let res = await doFetch()
 
-  // Auto-refresh on 401, then retry once.
-  if (res.status === 401 && useAdminStore.getState().refreshToken) {
+  // Auto-refresh on 401, then retry once. isAuthenticated false ise zaten
+  // login sayfasındayız, refresh denemenin anlamı yok.
+  if (res.status === 401 && useAdminStore.getState().isAuthenticated) {
     const ok = await attemptRefresh()
     if (ok) {
       res = await doFetch()
@@ -386,15 +395,14 @@ export const adminApi = {
   deleteBadge: (id: number) =>
     request<null>(`/admin/badges/${id}`, { method: 'DELETE' }),
   uploadBadgeImage: async (file: File): Promise<{ url: string }> => {
-    const { accessToken } = useAdminStore.getState()
+    // SEC-101: cookie auth; FormData için Content-Type'ı browser kendisi
+    // (boundary ile) ayarlasın, manuel set etme.
     const formData = new FormData();
     formData.append('file', file);
-    const headers: Record<string, string> = {}
-    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`
 
     const res = await fetch(`${API_BASE}/admin/badges/upload`, {
       method: 'POST',
-      headers,
+      credentials: 'include',
       body: formData,
     });
     const json = await res.json();
@@ -548,14 +556,12 @@ export const adminApi = {
     ),
 
   uploadAdCreative: async (file: File): Promise<{ url: string }> => {
-    const { accessToken } = useAdminStore.getState()
+    // SEC-101: cookie auth — bkz. uploadBadgeImage.
     const formData = new FormData()
     formData.append('file', file)
-    const headers: Record<string, string> = {}
-    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`
     const res = await fetch('/api/admin/ads/upload-creative', {
       method: 'POST',
-      headers,
+      credentials: 'include',
       body: formData,
     })
     const json = await res.json()

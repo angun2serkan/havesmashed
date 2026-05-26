@@ -1,6 +1,12 @@
 // Admin authorization context extractor.
 //
-// Tek auth mekanizması: JWT Bearer token.
+// Token transport (SEC-101): öncelik httpOnly cookie (admin_access_token).
+// Cookie yoksa `Authorization: Bearer <jwt>` header'ına düşer — admin
+// frontend cookie path'ine geçti ama dış tooling, manuel curl ve geçiş
+// dönemindeki eski browser cache'leri için fallback bir release boyunca
+// korunuyor. Sonraki PR'da Authorization fallback silinecek.
+//
+// Tek auth mekanizması: JWT.
 //   * brand_admin     → admin_users tablosundan login + JWT mint;
 //                       claims.sub = admin_user_id (gerçek UUID).
 //   * env-super       → email+password ADMIN_API_NAME/ADMIN_API_KEY
@@ -162,17 +168,22 @@ impl FromRequestParts<AppState> for AdminContext {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // ── JWT Bearer path (env-super + brand_admin) ─────────────
-        // x-admin-key path'i BUG-1 ile kaldırıldı. Tek kabul edilen
-        // kimlik mekanizması: `Authorization: Bearer <jwt>`.
-        let token = parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
+        // SEC-101: cookie path öncelikli, Authorization header fallback.
+        // Cookie: `admin_access_token` Path=/api/admin'den gelir; bütün
+        // admin endpointleri bu path altında.
+        let token: String = cookie_access_token(parts)
+            .or_else(|| {
+                parts
+                    .headers
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.strip_prefix("Bearer "))
+                    .map(|s| s.to_string())
+            })
             .ok_or_else(|| {
                 AppError::Unauthorized("missing admin credentials".to_string())
             })?;
+        let token = token.as_str();
 
         let key = DecodingKey::from_secret(state.config.jwt_secret.as_bytes());
         let mut validation = Validation::new(Algorithm::HS256);
@@ -245,4 +256,26 @@ impl FromRequestParts<AppState> for AdminContext {
             actor_name: None,
         })
     }
+}
+
+/// Cookie header'dan `admin_access_token` değerini ayıkla. Minimal RFC 6265
+/// parser: `name=value; name=value` formatında split + ilk eşleşme.
+fn cookie_access_token(parts: &Parts) -> Option<String> {
+    parts
+        .headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookie_header| {
+            cookie_header
+                .split(';')
+                .map(str::trim)
+                .find_map(|pair| {
+                    let (k, v) = pair.split_once('=')?;
+                    if k == "admin_access_token" {
+                        Some(v.to_string())
+                    } else {
+                        None
+                    }
+                })
+        })
 }
