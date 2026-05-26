@@ -60,24 +60,23 @@ function mapStats(s: any): Stats {
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+// SEC-102: Auth transport artık httpOnly cookie (`user_access_token`).
+// Tüm fetch çağrıları `credentials: 'include'` ile gönderilir; tarayıcı
+// cookie'yi otomatik ekler. localStorage'da JWT tutulmuyor, JS token'a
+// erişemez (XSS senaryosunda exfil imkansız).
 async function request<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const token = useAuthStore.getState().token;
-
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
 
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers,
+    credentials: "include",
   });
 
   if (response.status === 401) {
@@ -114,6 +113,11 @@ export const api = {
       },
     ),
 
+  // SEC-102: server-side cookie expire. Local store temizliği frontend
+  // tarafında ayrıca yapılır.
+  logout: () =>
+    request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+
   setNickname: (nickname: string) =>
     request<{ nickname: string; token: string; expires_in: number }>(
       "/auth/nickname",
@@ -147,12 +151,13 @@ export const api = {
     },
     opts?: { saveToken?: string },
   ): Promise<{ date: DateEntry; newBadges: string[] }> => {
-    const token = useAuthStore.getState().token;
+    // SEC-102: cookie auth — `request()` wrapper'ı kullanmıyoruz çünkü
+    // hata response'unda yapısal `ad_gate_required` field'ı korunmalı.
     const response = await fetch(`${API_BASE}/dates`, {
       method: "POST",
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(opts?.saveToken ? { "X-Ad-Save-Token": opts.saveToken } : {}),
       },
       body: JSON.stringify(data),

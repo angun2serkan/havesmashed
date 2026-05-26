@@ -1,4 +1,7 @@
 use axum::extract::State;
+use axum::http::header::SET_COOKIE;
+use axum::http::HeaderValue;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use chrono::{Datelike, NaiveDate};
@@ -9,6 +12,44 @@ use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
 use crate::services::{crypto, invite, wordlist};
 use crate::AppState;
+
+// ── Cookie configuration (SEC-102) ───────────────────────────────
+// User app auth artık httpOnly cookie üzerinden taşınıyor. JavaScript
+// (XSS dahil) document.cookie üzerinden token'a erişemez. `Secure`
+// flag prod'da set; dev HTTP'de set edilmez (browser reject eder).
+//
+// User app'te refresh endpoint yok — JWT 7 gün TTL ile tek seferde
+// mint edilir, expire olunca user tekrar seed phrase ile login olur.
+// Bu yüzden tek bir access_token cookie var, refresh_token yok.
+//
+// `user_` prefix admin cookie'leriyle karıştırılmaması için — admin
+// subdomain'i farklı host olduğu için teknik olarak ayrı cookie jar'ı
+// ama isim ayırımı network panelinde ayırt etmeyi kolaylaştırır.
+const ACCESS_COOKIE_NAME: &str = "user_access_token";
+const ACCESS_COOKIE_PATH: &str = "/api";
+
+fn build_cookie(name: &str, value: &str, path: &str, max_age: i64, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!(
+        "{name}={value}; HttpOnly{secure_attr}; SameSite=Strict; Path={path}; Max-Age={max_age}"
+    )
+}
+
+fn auth_cookie(token: &str, max_age: i64, is_production: bool) -> String {
+    build_cookie(ACCESS_COOKIE_NAME, token, ACCESS_COOKIE_PATH, max_age, is_production)
+}
+
+fn clear_auth_cookie(is_production: bool) -> String {
+    build_cookie(ACCESS_COOKIE_NAME, "", ACCESS_COOKIE_PATH, 0, is_production)
+}
+
+fn json_with_cookie(body: serde_json::Value, cookie: String) -> Response {
+    let mut response = Json(body).into_response();
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().append(SET_COOKIE, value);
+    }
+    response
+}
 
 // ── Request / Response types ────────────────────────────────────
 
@@ -80,6 +121,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/register", post(register))
         .route("/login", post(login))
+        .route("/logout", post(logout))
         .route("/nickname", put(set_nickname))
         .route("/me", get(get_me))
         .route("/birthday", put(set_birthday))
@@ -93,7 +135,7 @@ pub fn router() -> Router<AppState> {
 async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterRequest>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Response, AppError> {
     // Consume the invite token (required)
     let mut redis = state.redis.clone();
     let invite_data = invite::consume_invite(&mut redis, &body.invite_token).await?;
@@ -128,15 +170,26 @@ async fn register(
     let resp = RegisterResponse {
         user_id,
         secret_phrase,
-        token,
+        token: token.clone(),
         expires_in: state.config.jwt_expiry_secs,
     };
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "data": resp,
-        "error": null
-    })))
+    // SEC-102: token'ı hem cookie hem body'de döndür. Frontend cookie
+    // path'ine geçti; body'deki kopya legacy/tooling için bir release
+    // boyunca korunuyor (sonraki PR'da silinecek).
+    let cookie = auth_cookie(
+        &token,
+        state.config.jwt_expiry_secs as i64,
+        state.config.is_production,
+    );
+    Ok(json_with_cookie(
+        serde_json::json!({
+            "success": true,
+            "data": resp,
+            "error": null
+        }),
+        cookie,
+    ))
 }
 
 /// POST /api/auth/login
@@ -144,7 +197,7 @@ async fn register(
 async fn login(
     State(state): State<AppState>,
     Json(body): Json<LoginRequest>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Response, AppError> {
     // Normalize and hash — same normalization as register
     let secret_hash = crypto::hash_secret(&body.secret_phrase);
 
@@ -173,17 +226,41 @@ async fn login(
     )?;
 
     let resp = LoginResponse {
-        token,
+        token: token.clone(),
         expires_in: state.config.jwt_expiry_secs,
         user_id,
         nickname,
     };
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "data": resp,
-        "error": null
-    })))
+    let cookie = auth_cookie(
+        &token,
+        state.config.jwt_expiry_secs as i64,
+        state.config.is_production,
+    );
+    Ok(json_with_cookie(
+        serde_json::json!({
+            "success": true,
+            "data": resp,
+            "error": null
+        }),
+        cookie,
+    ))
+}
+
+/// POST /api/auth/logout
+/// SEC-102: cookie'yi server-side expire et. JWT revocation list
+/// (SEC-105) gelene kadar token kendi süresinin sonuna kadar valid
+/// kalır, ama browser cookie expire edildiği için pratik olarak
+/// kullanılamaz.
+async fn logout(State(state): State<AppState>) -> Result<Response, AppError> {
+    Ok(json_with_cookie(
+        serde_json::json!({
+            "success": true,
+            "data": { "ok": true },
+            "error": null
+        }),
+        clear_auth_cookie(state.config.is_production),
+    ))
 }
 
 /// PUT /api/auth/nickname
@@ -192,7 +269,7 @@ async fn set_nickname(
     State(state): State<AppState>,
     auth: AuthUser,
     Json(body): Json<SetNicknameRequest>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Response, AppError> {
     let nickname = body.nickname.trim().to_string();
 
     // Validate nickname
@@ -240,15 +317,24 @@ async fn set_nickname(
 
     let resp = NicknameResponse {
         nickname,
-        token,
+        token: token.clone(),
         expires_in: state.config.jwt_expiry_secs,
     };
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "data": resp,
-        "error": null
-    })))
+    // SEC-102: nickname yeni claim taşıdığı için cookie'yi de yenile.
+    let cookie = auth_cookie(
+        &token,
+        state.config.jwt_expiry_secs as i64,
+        state.config.is_production,
+    );
+    Ok(json_with_cookie(
+        serde_json::json!({
+            "success": true,
+            "data": resp,
+            "error": null
+        }),
+        cookie,
+    ))
 }
 
 /// GET /api/auth/me

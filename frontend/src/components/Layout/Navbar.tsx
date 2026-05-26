@@ -27,6 +27,17 @@ export function Navbar() {
   const { isAuthenticated, user, logout } = useAuthStore();
   const [unreadCount, setUnreadCount] = useState(0);
 
+  // SEC-102: backend cookie'yi expire etsin, sonra local state'i temizle.
+  // Network hatasında bile lokal logout devam etsin.
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } catch {
+      // ignore — cookie zaten expire olabilir, local logout yine de ilerle
+    }
+    logout();
+  };
+
   useEffect(() => {
     if (!isAuthenticated) return;
     const fetchCount = () => {
@@ -108,7 +119,7 @@ export function Navbar() {
             </span>
           )}
           <button
-            onClick={logout}
+            onClick={handleLogout}
             className="flex items-center justify-center w-10 h-10 rounded-lg text-dark-400 hover:text-red-400 hover:bg-dark-800 transition-all cursor-pointer"
             title="Logout"
           >
