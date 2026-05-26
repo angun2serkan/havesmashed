@@ -8,7 +8,7 @@ const NICKNAME_REGEX = /^[a-zA-Z0-9_.]{3,30}$/;
 
 export function NicknamePage() {
   const navigate = useNavigate();
-  const { token, setNickname: storeSetNickname } = useAuthStore();
+  const { setNickname: storeSetNickname } = useAuthStore();
   const [nickname, setNickname] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -22,12 +22,11 @@ export function NicknamePage() {
     setError("");
 
     try {
+      // SEC-102: cookie auth — credentials: 'include' ile JWT cookie taşınır.
       const res = await fetch("/api/auth/nickname", {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nickname }),
       });
 
@@ -37,7 +36,7 @@ export function NicknamePage() {
         throw new Error(json.error || "Failed to set nickname");
       }
 
-      storeSetNickname(json.data.nickname, json.data.token);
+      storeSetNickname(json.data.nickname);
       navigate("/");
     } catch (err) {
       setError(

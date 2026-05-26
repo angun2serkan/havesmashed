@@ -102,7 +102,7 @@ export function SettingsPage() {
     setNicknameError(null);
     try {
       const result = await api.setNickname(trimmed);
-      setNickname(result.nickname, result.token);
+      setNickname(result.nickname);
       setEditingNickname(false);
     } catch (err) {
       setNicknameError(err instanceof Error ? err.message : "Failed to update nickname");
@@ -114,10 +114,22 @@ export function SettingsPage() {
   const handleDeleteAccount = async () => {
     try {
       await api.deleteAccount();
+      // SEC-102: cookie'yi de temizle ki kalan token kullanılamasın.
+      await api.logout().catch(() => {});
       logout();
     } catch {
       // Error handling could be added here
     }
+  };
+
+  // SEC-102: standalone logout — backend cookie expire + local state temizle.
+  const handleLogout = async () => {
+    try {
+      await api.logout();
+    } catch {
+      // best-effort
+    }
+    logout();
   };
 
   return (
@@ -344,7 +356,7 @@ export function SettingsPage() {
         <Button
           variant="secondary"
           className="w-full"
-          onClick={logout}
+          onClick={handleLogout}
         >
           Sign Out
         </Button>

@@ -14,7 +14,6 @@ export function RegisterPage() {
   const [seedPhrase, setSeedPhrase] = useState("");
   const [registrationData, setRegistrationData] = useState<{
     userId: string;
-    token: string;
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -33,8 +32,10 @@ export function RegisterPage() {
       }
       const body = { invite_token: inviteToken };
 
+      // SEC-102: cookie auth — credentials: 'include' ile backend cookie set eder.
       const res = await fetch("/api/auth/register", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
@@ -48,7 +49,6 @@ export function RegisterPage() {
       setSeedPhrase(json.data.secret_phrase);
       setRegistrationData({
         userId: json.data.user_id,
-        token: json.data.token,
       });
       setStep("display");
     } catch (err) {
@@ -63,16 +63,13 @@ export function RegisterPage() {
   const handleConfirm = () => {
     if (!registrationData) return;
 
-    setAuth(
-      {
-        id: registrationData.userId,
-        nickname: null,
-        createdAt: new Date().toISOString(),
-        inviteCount: 0,
-        isActive: true,
-      },
-      registrationData.token,
-    );
+    setAuth({
+      id: registrationData.userId,
+      nickname: null,
+      createdAt: new Date().toISOString(),
+      inviteCount: 0,
+      isActive: true,
+    });
 
     navigate("/nickname");
   };

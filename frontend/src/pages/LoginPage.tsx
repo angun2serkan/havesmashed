@@ -15,8 +15,12 @@ export function LoginPage() {
     setError("");
 
     try {
+      // SEC-102: cookie auth — credentials: 'include' ile cookie set edilir,
+      // body'deki `token` alanı artık kullanılmıyor (backend sadece
+      // backward compat için döndürüyor).
       const res = await fetch("/api/auth/login", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ secret_phrase: secretPhrase }),
       });
@@ -27,18 +31,15 @@ export function LoginPage() {
         throw new Error(json.error || "Login failed");
       }
 
-      const { token, user_id, nickname } = json.data;
+      const { user_id, nickname } = json.data;
 
-      setAuth(
-        {
-          id: user_id,
-          nickname: nickname || null,
-          createdAt: new Date().toISOString(),
-          inviteCount: 0,
-          isActive: true,
-        },
-        token,
-      );
+      setAuth({
+        id: user_id,
+        nickname: nickname || null,
+        createdAt: new Date().toISOString(),
+        inviteCount: 0,
+        isActive: true,
+      });
 
       const searchParams = new URLSearchParams(window.location.search);
       const friendCode = searchParams.get("friend_code");
