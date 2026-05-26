@@ -70,7 +70,14 @@ services:
 
   # ── Nginx Reverse Proxy (SSL Termination) ──────────────────────
   nginx:
-    image: nginx:alpine
+    # prod.conf artık image layer'ında (bkz. nginx/Dockerfile).
+    # Bind mount yaklaşımı belirli deploy senaryolarında sessizce eski
+    # config ile çalışıyordu (login swap sorununun root cause'u). Custom
+    # image deterministic: `docker compose ... up -d --build nginx`
+    # konfig değişikliğini garantili uygular.
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
       - frontend
@@ -80,7 +87,9 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/prod.conf:/etc/nginx/conf.d/default.conf:ro
+      # SSL sertifikaları certbot tarafından runtime'da güncellendiği
+      # için bind mount kalıyor. prod.conf bind'i kaldırıldı (artık
+      # image'a baked).
       - ./nginx/ssl:/etc/nginx/ssl:ro
       - certbot-webroot:/var/www/certbot:ro
     deploy:
