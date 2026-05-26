@@ -2,6 +2,23 @@ import { useAdminStore } from '@/stores/adminStore'
 
 const API_BASE = '/api'
 
+// SEC-103: double-submit CSRF — backend login/refresh response'unda
+// `admin_csrf_token` cookie (HttpOnly DEĞİL, JS okuyabilsin diye) set
+// eder. Mutating request'lere `X-CSRF-Token` header'ı ekliyoruz.
+// Cookie'yi her istekte tazece okuyoruz ki refresh sırasında değişen
+// token'ı yakalayalım.
+const CSRF_COOKIE_NAME = 'admin_csrf_token'
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH'])
+
+function readCsrfCookie(): string | null {
+  const match = document.cookie
+    .split(';')
+    .map((c) => c.trim())
+    .find((c) => c.startsWith(`${CSRF_COOKIE_NAME}=`))
+  if (!match) return null
+  return match.slice(CSRF_COOKIE_NAME.length + 1)
+}
+
 // ── Auth-aware fetch wrapper ──────────────────────────────────
 //
 // SEC-101: Auth transport artık httpOnly cookie. Tüm fetch çağrıları
@@ -30,10 +47,15 @@ async function attemptRefresh(): Promise<boolean> {
   try {
     // Refresh cookie path'i `/api/admin/auth/refresh` — tarayıcı sadece
     // bu URL'e refresh cookie'sini ekler. Body bilerek boş.
+    // SEC-103: mevcut CSRF token'ı header'a yansıt; refresh sonrası
+    // backend yeni token set edecek (cookie + body).
+    const csrf = readCsrfCookie()
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (csrf) headers['X-CSRF-Token'] = csrf
     const res = await fetch(`${API_BASE}/admin/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: '{}',
     })
     if (!res.ok) {
@@ -69,6 +91,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     // sub != Uuid::nil() ise header'ı bilerek ignore eder.
     if (impersonatingBrandId)
       headers['X-Impersonate-Brand'] = impersonatingBrandId
+    // SEC-103 — CSRF double-submit. Mutating method ise cookie değerini
+    // header'a yansıt. Header eklemeyince backend cookie/header mismatch
+    // → 403; bu yüzden cookie henüz set edilmediyse de header'ı atlamak
+    // güvenli (backend cookie yoksa CSRF check'i skip eder).
+    const method = (options.method || 'GET').toUpperCase()
+    if (MUTATING_METHODS.has(method)) {
+      const csrf = readCsrfCookie()
+      if (csrf) headers['X-CSRF-Token'] = csrf
+    }
     return fetch(`${API_BASE}${path}`, {
       ...options,
       headers,
@@ -397,12 +428,17 @@ export const adminApi = {
   uploadBadgeImage: async (file: File): Promise<{ url: string }> => {
     // SEC-101: cookie auth; FormData için Content-Type'ı browser kendisi
     // (boundary ile) ayarlasın, manuel set etme.
+    // SEC-103: POST mutating → CSRF header zorunlu.
     const formData = new FormData();
     formData.append('file', file);
+    const csrf = readCsrfCookie()
+    const headers: Record<string, string> = {}
+    if (csrf) headers['X-CSRF-Token'] = csrf
 
     const res = await fetch(`${API_BASE}/admin/badges/upload`, {
       method: 'POST',
       credentials: 'include',
+      headers,
       body: formData,
     });
     const json = await res.json();
@@ -556,12 +592,16 @@ export const adminApi = {
     ),
 
   uploadAdCreative: async (file: File): Promise<{ url: string }> => {
-    // SEC-101: cookie auth — bkz. uploadBadgeImage.
+    // SEC-101: cookie auth — bkz. uploadBadgeImage. SEC-103: CSRF header.
     const formData = new FormData()
     formData.append('file', file)
+    const csrf = readCsrfCookie()
+    const headers: Record<string, string> = {}
+    if (csrf) headers['X-CSRF-Token'] = csrf
     const res = await fetch('/api/admin/ads/upload-creative', {
       method: 'POST',
       credentials: 'include',
+      headers,
       body: formData,
     })
     const json = await res.json()

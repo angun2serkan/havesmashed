@@ -68,6 +68,9 @@ async fn main() -> anyhow::Result<()> {
         CONTENT_TYPE,
         AUTHORIZATION,
         HeaderName::from_static("x-impersonate-brand"),
+        // SEC-103 — CSRF double-submit pattern için frontend her
+        // state-changing istekte bu header'ı ekler.
+        HeaderName::from_static("x-csrf-token"),
     ];
     let allowed_methods = [
         Method::GET,
@@ -125,6 +128,10 @@ async fn main() -> anyhow::Result<()> {
             state.clone(),
             middleware::event_tracker::track,
         ))
+        // SEC-103 — CSRF double-submit. Cookie-based session varsa
+        // X-CSRF-Token header zorunlu; cookie yoksa (login/public)
+        // middleware atlar. Tüm /api ve public routes'i kapsar.
+        .layer(axum::middleware::from_fn(middleware::csrf::csrf_protect))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state);

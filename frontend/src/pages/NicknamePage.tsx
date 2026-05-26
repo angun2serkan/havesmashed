@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { UserPen } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/authStore";
+import { api } from "@/services/api";
 
 const NICKNAME_REGEX = /^[a-zA-Z0-9_.]{3,30}$/;
 
@@ -22,21 +23,10 @@ export function NicknamePage() {
     setError("");
 
     try {
-      // SEC-102: cookie auth — credentials: 'include' ile JWT cookie taşınır.
-      const res = await fetch("/api/auth/nickname", {
-        method: "PUT",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nickname }),
-      });
-
-      const json = await res.json();
-
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || "Failed to set nickname");
-      }
-
-      storeSetNickname(json.data.nickname);
+      // SEC-102 + SEC-103: api.setNickname wrapper'ı kullanıyoruz —
+      // credentials + X-CSRF-Token header otomatik enjekte edilir.
+      const result = await api.setNickname(nickname);
+      storeSetNickname(result.nickname);
       navigate("/");
     } catch (err) {
       setError(

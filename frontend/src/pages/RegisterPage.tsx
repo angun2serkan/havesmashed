@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { SeedPhraseDisplay } from "@/components/Auth/SeedPhraseDisplay";
 import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/authStore";
+import { api } from "@/services/api";
 
 type Step = "create" | "display";
 
@@ -30,26 +31,12 @@ export function RegisterPage() {
         setLoading(false);
         return;
       }
-      const body = { invite_token: inviteToken };
 
-      // SEC-102: cookie auth — credentials: 'include' ile backend cookie set eder.
-      const res = await fetch("/api/auth/register", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      const json = await res.json();
-
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || "Registration failed");
-      }
-
-      setSeedPhrase(json.data.secret_phrase);
-      setRegistrationData({
-        userId: json.data.user_id,
-      });
+      // SEC-102 + SEC-103: api.register wrapper'ı credentials + CSRF
+      // header'ı otomatik yönetir. Eski direct fetch kaldırıldı.
+      const data = await api.register(inviteToken);
+      setSeedPhrase(data.secret_phrase);
+      setRegistrationData({ userId: data.user_id });
       setStep("display");
     } catch (err) {
       setError(

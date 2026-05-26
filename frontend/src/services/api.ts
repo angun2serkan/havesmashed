@@ -20,6 +20,22 @@ import type {
 
 const API_BASE = "/api";
 
+// SEC-103 — double-submit CSRF. Backend `user_csrf_token` cookie'sini
+// JS-okunabilir set ediyor. Mutating request'lerde değeri okuyup
+// X-CSRF-Token header'ına yansıtıyoruz. Cookie yoksa (login/register
+// öncesi) backend middleware zaten check'i skip eder.
+const CSRF_COOKIE_NAME = "user_csrf_token";
+const MUTATING_METHODS = new Set(["POST", "PUT", "DELETE", "PATCH"]);
+
+function readCsrfCookie(): string | null {
+  const match = document.cookie
+    .split(";")
+    .map((c) => c.trim())
+    .find((c) => c.startsWith(`${CSRF_COOKIE_NAME}=`));
+  if (!match) return null;
+  return match.slice(CSRF_COOKIE_NAME.length + 1);
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function mapDate(d: any): DateEntry {
   return {
@@ -64,6 +80,7 @@ function mapStats(s: any): Stats {
 // Tüm fetch çağrıları `credentials: 'include'` ile gönderilir; tarayıcı
 // cookie'yi otomatik ekler. localStorage'da JWT tutulmuyor, JS token'a
 // erişemez (XSS senaryosunda exfil imkansız).
+// SEC-103: mutating method ise X-CSRF-Token header'ı da ekliyoruz.
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -72,6 +89,12 @@ async function request<T>(
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
+
+  const method = (options.method || "GET").toUpperCase();
+  if (MUTATING_METHODS.has(method)) {
+    const csrf = readCsrfCookie();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+  }
 
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -153,11 +176,14 @@ export const api = {
   ): Promise<{ date: DateEntry; newBadges: string[] }> => {
     // SEC-102: cookie auth — `request()` wrapper'ı kullanmıyoruz çünkü
     // hata response'unda yapısal `ad_gate_required` field'ı korunmalı.
+    // SEC-103: CSRF header.
+    const csrf = readCsrfCookie();
     const response = await fetch(`${API_BASE}/dates`, {
       method: "POST",
       credentials: "include",
       headers: {
         "Content-Type": "application/json",
+        ...(csrf ? { "X-CSRF-Token": csrf } : {}),
         ...(opts?.saveToken ? { "X-Ad-Save-Token": opts.saveToken } : {}),
       },
       body: JSON.stringify(data),

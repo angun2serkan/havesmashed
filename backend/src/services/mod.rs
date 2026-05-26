@@ -2,6 +2,7 @@ pub mod ad_targeting;
 pub mod ad_token;
 pub mod analytics_aggregator;
 pub mod crypto;
+pub mod csrf;
 pub mod event_tracker;
 pub mod badge_criteria;
 pub mod impression_cap_enforcer;
