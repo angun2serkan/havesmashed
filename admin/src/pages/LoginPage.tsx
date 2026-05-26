@@ -3,10 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { useAdminStore } from '@/stores/adminStore'
 import { authApi } from '@/services/api'
 
-// Tek login formu. BUG-1 fix sonrası backend hem brand_admin hem
-// env-super için JWT döner (env-super: sub=Uuid::nil() sentinel).
-// Eski `auth_method === 'api_key'` dallanması ve `setApiKey` çağrısı
-// kaldırıldı — artık tek bir setTokens(access, refresh) yolu var.
+// Tek login formu. SEC-101: token transport artık httpOnly cookie —
+// backend Set-Cookie ile `admin_access_token` + `admin_refresh_token`
+// gönderir; frontend localStorage'a token yazmaz. Store sadece
+// `isAuthenticated` flag'ini ve /me snapshot'ını tutar.
 export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -20,8 +20,10 @@ export default function LoginPage() {
     setLoading(true)
 
     try {
-      const res = await authApi.login(email.trim(), password)
-      useAdminStore.getState().setTokens(res.access_token, res.refresh_token)
+      // Login backend Set-Cookie ile cookie'leri yazar; body'deki
+      // access_token/refresh_token alanları artık kullanılmıyor.
+      await authApi.login(email.trim(), password)
+      useAdminStore.getState().markAuthenticated()
 
       try {
         const me = await authApi.me()

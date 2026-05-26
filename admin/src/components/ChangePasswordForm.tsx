@@ -41,8 +41,10 @@ export default function ChangePasswordForm({ onSuccess }: Props) {
 
     setLoading(true)
     try {
-      const res = await authApi.changePassword(current, next)
-      useAdminStore.getState().setTokens(res.access_token, res.refresh_token)
+      // SEC-101: backend cookie'leri Set-Cookie ile yeniler;
+      // response body'deki token alanları artık kullanılmıyor.
+      await authApi.changePassword(current, next)
+      useAdminStore.getState().markAuthenticated()
       // Refresh the /me snapshot — must_change_password should now be false
       try {
         const me = await authApi.me()

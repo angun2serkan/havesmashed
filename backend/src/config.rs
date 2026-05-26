@@ -10,6 +10,9 @@ pub struct Config {
     pub admin_api_name: String,
     pub host: String,
     pub port: u16,
+    /// True iff APP_ENV=production. Used to gate cookie `Secure` flag
+    /// (dev üzerinde HTTP localhost'ta `Secure` cookie set edilmez).
+    pub is_production: bool,
 }
 
 impl Config {
@@ -30,6 +33,9 @@ impl Config {
                 .unwrap_or_else(|_| "3000".to_string())
                 .parse()
                 .expect("PORT must be a valid number"),
+            is_production: env::var("APP_ENV")
+                .map(|v| v == "production")
+                .unwrap_or(false),
         }
     }
 }

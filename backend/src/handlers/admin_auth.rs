@@ -24,6 +24,9 @@
 //     `sub == Uuid::nil()` kısa-yolu çalışır.
 
 use axum::extract::State;
+use axum::http::header::SET_COOKIE;
+use axum::http::HeaderValue;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
@@ -42,6 +45,82 @@ const ACCESS_TTL_SECS: i64 = 60 * 60;        // 1 hour
 const REFRESH_TTL_SECS: i64 = 60 * 60 * 24 * 30; // 30 days
 const LOCKOUT_THRESHOLD: i64 = 5;
 const LOCKOUT_WINDOW_SECS: i64 = 60 * 15;    // 15 minutes
+
+// ── Cookie configuration (SEC-101) ───────────────────────────────
+// httpOnly + SameSite=Strict cookies so a stored XSS in the admin panel
+// cannot read the JWT via document.cookie. `Secure` flag set only in
+// prod — dev runs HTTP on localhost (mkcert not yet standardised) and
+// browsers reject Secure cookies on insecure origins.
+//
+// Path scoping limits the cookie to admin-API requests:
+//   * access  → /api/admin   (every authenticated admin endpoint)
+//   * refresh → /api/admin/auth/refresh (only sent when refreshing)
+//
+// `admin_` prefix distinguishes from any future user-side cookies
+// (SEC-102) when both apps are inspected side by side.
+pub(crate) const ACCESS_COOKIE_NAME: &str = "admin_access_token";
+pub(crate) const REFRESH_COOKIE_NAME: &str = "admin_refresh_token";
+const ACCESS_COOKIE_PATH: &str = "/api/admin";
+const REFRESH_COOKIE_PATH: &str = "/api/admin/auth/refresh";
+
+fn build_cookie(name: &str, value: &str, path: &str, max_age: i64, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!(
+        "{name}={value}; HttpOnly{secure_attr}; SameSite=Strict; Path={path}; Max-Age={max_age}"
+    )
+}
+
+fn auth_cookies(access: &str, refresh: &str, is_production: bool) -> [String; 2] {
+    [
+        build_cookie(
+            ACCESS_COOKIE_NAME,
+            access,
+            ACCESS_COOKIE_PATH,
+            ACCESS_TTL_SECS,
+            is_production,
+        ),
+        build_cookie(
+            REFRESH_COOKIE_NAME,
+            refresh,
+            REFRESH_COOKIE_PATH,
+            REFRESH_TTL_SECS,
+            is_production,
+        ),
+    ]
+}
+
+fn clear_auth_cookies(is_production: bool) -> [String; 2] {
+    [
+        build_cookie(
+            ACCESS_COOKIE_NAME,
+            "",
+            ACCESS_COOKIE_PATH,
+            0,
+            is_production,
+        ),
+        build_cookie(
+            REFRESH_COOKIE_NAME,
+            "",
+            REFRESH_COOKIE_PATH,
+            0,
+            is_production,
+        ),
+    ]
+}
+
+fn json_with_cookies(body: Value, cookies: [String; 2]) -> Response {
+    let mut response = Json(body).into_response();
+    let headers = response.headers_mut();
+    for cookie in cookies {
+        // Cookie değeri ASCII printable kalıyor (base64 JWT) — parse hatası
+        // pratikte imkansız; yine de Result'ı silently drop ediyoruz ki bir
+        // teorik fuzz girdisi response'u kırmasın.
+        if let Ok(value) = HeaderValue::from_str(&cookie) {
+            headers.append(SET_COOKIE, value);
+        }
+    }
+    response
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -78,7 +157,7 @@ struct AdminUserRow {
 async fn login(
     State(state): State<AppState>,
     Json(body): Json<LoginBody>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<Response, AppError> {
     // 1. super_admin shortcut: email == ADMIN_API_NAME && password == ADMIN_API_KEY
     //    Frontend tek bir login formu kullanıyor; rol seçimini backend yapar.
     //    Lockout brand_admin'den ayrı (kendi rate-limit anahtarı), env-super
@@ -103,22 +182,30 @@ async fn login(
             // Refresh ve admin_context bu sentinel'i tanır ve özel yol işler.
             let (access_token, refresh_token) =
                 issue_super_tokens(&state.config.jwt_secret, None)?;
-            return Ok(Json(json!({
-                "success": true,
-                "data": {
-                    "auth_method": "jwt",
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "must_change_password": false,
-                    "user": {
-                        "id": null,
-                        "display_name": state.config.admin_api_name,
-                        "role": "super_admin",
-                        "brand_id": null,
+            // SEC-101: tokenları hem cookie hem body'de döndür. Frontend
+            // cookie path'ine geçti; body'deki kopya legacy/tooling için
+            // bir release korunuyor, sonraki PR'da silinecek.
+            let cookies =
+                auth_cookies(&access_token, &refresh_token, state.config.is_production);
+            return Ok(json_with_cookies(
+                json!({
+                    "success": true,
+                    "data": {
+                        "auth_method": "jwt",
+                        "access_token": access_token,
+                        "refresh_token": refresh_token,
+                        "must_change_password": false,
+                        "user": {
+                            "id": null,
+                            "display_name": state.config.admin_api_name,
+                            "role": "super_admin",
+                            "brand_id": null,
+                        },
                     },
-                },
-                "error": null,
-            })));
+                    "error": null,
+                }),
+                cookies,
+            ));
         }
         // ADMIN_API_NAME doğru ama key yanlış — başka yere düşmesin
         record_failure(&mut redis, &super_lock_key).await;
@@ -186,22 +273,26 @@ async fn login(
     let (access_token, refresh_token) =
         issue_tokens(&state.config.jwt_secret, &user, &role, None)?;
 
-    Ok(Json(json!({
-        "success": true,
-        "data": {
-            "auth_method": "jwt",
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "must_change_password": user.must_change_password,
-            "user": {
-                "id": user.id,
-                "display_name": user.display_name,
-                "role": user.role,
-                "brand_id": user.brand_id,
+    let cookies = auth_cookies(&access_token, &refresh_token, state.config.is_production);
+    Ok(json_with_cookies(
+        json!({
+            "success": true,
+            "data": {
+                "auth_method": "jwt",
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "must_change_password": user.must_change_password,
+                "user": {
+                    "id": user.id,
+                    "display_name": user.display_name,
+                    "role": user.role,
+                    "brand_id": user.brand_id,
+                },
             },
-        },
-        "error": null,
-    })))
+            "error": null,
+        }),
+        cookies,
+    ))
 }
 
 async fn record_failure(redis: &mut redis::aio::ConnectionManager, key: &str) {
@@ -270,20 +361,36 @@ fn issue_super_tokens(
 // ════════════════════════════════════════════════════════════════
 // POST /api/admin/auth/refresh
 // ════════════════════════════════════════════════════════════════
+//
+// SEC-101: refresh token cookie (httpOnly, Path=/api/admin/auth/refresh)
+// olarak gönderilir. Geçiş döneminde body'deki `refresh_token` alanını
+// da kabul ediyoruz — eski deploy edilmiş admin bundle'ları cookie
+// göndermez, body göndermeye devam eder. Bir sonraki release'de body
+// path'i kaldırılacak.
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct RefreshBody {
-    refresh_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 
 async fn refresh(
     State(state): State<AppState>,
-    Json(body): Json<RefreshBody>,
-) -> Result<Json<Value>, AppError> {
+    headers: axum::http::HeaderMap,
+    body: Option<Json<RefreshBody>>,
+) -> Result<Response, AppError> {
+    // Cookie first, body fallback. Hard 400 yerine 401 — auth context
+    // sorunu olduğunu netleştirir.
+    let token = cookie_value(&headers, REFRESH_COOKIE_NAME)
+        .or_else(|| body.and_then(|b| b.0.refresh_token))
+        .ok_or_else(|| {
+            AppError::Unauthorized("missing refresh token".to_string())
+        })?;
+
     let key = jsonwebtoken::DecodingKey::from_secret(state.config.jwt_secret.as_bytes());
     let mut validation = jsonwebtoken::Validation::new(Algorithm::HS256);
     validation.set_required_spec_claims(&["sub", "exp", "iat"]);
-    let data = jsonwebtoken::decode::<AdminClaims>(&body.refresh_token, &key, &validation)?;
+    let data = jsonwebtoken::decode::<AdminClaims>(&token, &key, &validation)?;
     let claims = data.claims;
 
     // ── Env-super refresh: sub=Uuid::nil() sentinel ─────────────
@@ -307,15 +414,19 @@ async fn refresh(
         }
         let (access_token, refresh_token) =
             issue_super_tokens(&state.config.jwt_secret, claims.imp)?;
-        return Ok(Json(json!({
-            "success": true,
-            "data": {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "must_change_password": false,
-            },
-            "error": null,
-        })));
+        let cookies = auth_cookies(&access_token, &refresh_token, state.config.is_production);
+        return Ok(json_with_cookies(
+            json!({
+                "success": true,
+                "data": {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "must_change_password": false,
+                },
+                "error": null,
+            }),
+            cookies,
+        ));
     }
 
     // ── Brand_admin refresh ────────────────────────────────────
@@ -342,25 +453,58 @@ async fn refresh(
     let (access_token, refresh_token) =
         issue_tokens(&state.config.jwt_secret, &user, &role, claims.imp)?;
 
-    Ok(Json(json!({
-        "success": true,
-        "data": {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "must_change_password": user.must_change_password,
-        },
-        "error": null,
-    })))
+    let cookies = auth_cookies(&access_token, &refresh_token, state.config.is_production);
+    Ok(json_with_cookies(
+        json!({
+            "success": true,
+            "data": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "must_change_password": user.must_change_password,
+            },
+            "error": null,
+        }),
+        cookies,
+    ))
+}
+
+/// Cookie header'dan tek bir cookie değerini çıkar. RFC 6265 minimal parser:
+/// `name1=value1; name2=value2` formatını split eder. Quote'lanmış değer
+/// veya escape karakteri yok (JWT base64url ASCII güvenli).
+fn cookie_value(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookie_header| {
+            cookie_header
+                .split(';')
+                .map(str::trim)
+                .find_map(|pair| {
+                    let (k, v) = pair.split_once('=')?;
+                    if k == name {
+                        Some(v.to_string())
+                    } else {
+                        None
+                    }
+                })
+        })
 }
 
 // ════════════════════════════════════════════════════════════════
 // POST /api/admin/auth/logout
 // ════════════════════════════════════════════════════════════════
-// MVP: no server-side token revocation. Client drops the tokens.
-// T7 adds refresh-token blacklist.
+// SEC-101: server-side cookie expire. JWT revocation list (SEC-105)
+// gelene kadar token'ın kendi expiry'sine kadar valid kalır — ama
+// browser cookie expire edildiği için pratik olarak kullanılamaz.
 
-async fn logout(_ctx: AdminContext) -> Result<Json<Value>, AppError> {
-    Ok(Json(json!({ "success": true, "data": { "ok": true }, "error": null })))
+async fn logout(
+    State(state): State<AppState>,
+    _ctx: AdminContext,
+) -> Result<Response, AppError> {
+    Ok(json_with_cookies(
+        json!({ "success": true, "data": { "ok": true }, "error": null }),
+        clear_auth_cookies(state.config.is_production),
+    ))
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -381,7 +525,7 @@ async fn change_password(
     State(state): State<AppState>,
     ctx: AdminContext,
     Json(body): Json<ChangePasswordBody>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<Response, AppError> {
     // ADMIN_API_KEY synthetic super has no user to change password for.
     let admin_user_id = ctx
         .admin_user_id
@@ -463,15 +607,19 @@ async fn change_password(
     let (access_token, refresh_token) =
         issue_tokens(&state.config.jwt_secret, &user, &role, ctx.impersonating_brand_id)?;
 
-    Ok(Json(json!({
-        "success": true,
-        "data": {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "must_change_password": false,
-        },
-        "error": null,
-    })))
+    let cookies = auth_cookies(&access_token, &refresh_token, state.config.is_production);
+    Ok(json_with_cookies(
+        json!({
+            "success": true,
+            "data": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "must_change_password": false,
+            },
+            "error": null,
+        }),
+        cookies,
+    ))
 }
 
 // ════════════════════════════════════════════════════════════════

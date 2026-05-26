@@ -25,10 +25,11 @@ export interface AdminMe {
 }
 
 interface AdminState {
-  // Auth credentials. BUG-1 fix: legacy `apiKey` alanı tamamen kaldırıldı;
-  // env-super da JWT taşır (admin_user_id===null ile ayırt edilir).
-  accessToken: string | null
-  refreshToken: string | null
+  // SEC-101: access/refresh token'lar artık httpOnly cookie. JavaScript
+  // tokenları okuyamaz; store sadece "oturum açık mı" boolean'ını ve
+  // /me snapshot'ını tutar. Eski `accessToken` / `refreshToken` alanları
+  // migration ile silinir (version 3).
+  isAuthenticated: boolean
   // Identity (loaded after /me)
   me: AdminMe | null
   // Env-super impersonation state — frontend her request'te
@@ -37,11 +38,8 @@ interface AdminState {
   // zaman null kalır (backend zaten ignore eder).
   impersonatingBrandId: string | null
 
-  // Computed
-  isAuthenticated: boolean
-
   // Mutators
-  setTokens: (access: string, refresh: string) => void
+  markAuthenticated: () => void
   setMe: (me: AdminMe | null) => void
   clearImpersonation: () => void
   setImpersonating: (brand: BrandRef) => void
@@ -51,18 +49,14 @@ interface AdminState {
 export const useAdminStore = create<AdminState>()(
   persist(
     (set) => ({
-      accessToken: null,
-      refreshToken: null,
+      isAuthenticated: false,
       me: null,
       impersonatingBrandId: null,
-      isAuthenticated: false,
 
-      setTokens: (access, refresh) =>
+      markAuthenticated: () =>
         set({
-          accessToken: access,
-          refreshToken: refresh,
-          impersonatingBrandId: null,
           isAuthenticated: true,
+          impersonatingBrandId: null,
         }),
 
       setMe: (me) => set({ me }),
@@ -81,46 +75,41 @@ export const useAdminStore = create<AdminState>()(
 
       logout: () =>
         set({
-          accessToken: null,
-          refreshToken: null,
+          isAuthenticated: false,
           me: null,
           impersonatingBrandId: null,
-          isAuthenticated: false,
         }),
     }),
     {
       name: 'havesmashed-admin',
-      // BUG-1 fix: persisted state'i whitelist'le tut. Eski apiKey alanı
-      // (super_admin ADMIN_API_KEY'ini düz metin saklıyordu) artık şemada
-      // yok; partialize ilerideki write'larda alanı düşürür.
+      // Persist edilen field'lar: token YOK (cookie'de). Sadece UI state.
       partialize: (s) => ({
-        accessToken: s.accessToken,
-        refreshToken: s.refreshToken,
+        isAuthenticated: s.isAuthenticated,
         me: s.me,
         impersonatingBrandId: s.impersonatingBrandId,
-        isAuthenticated: s.isAuthenticated,
       }),
-      // BUG-1 fix migration: eski tarayıcılarda localStorage'da
-      // `apiKey` ve eski `auth_method: "api_key"` değerleri kalmış
-      // olabilir. version=2 ile rehydrate sırasında alanı sil; ayrıca
-      // eski session'u logout'a düşür ki kullanıcı JWT akışıyla taze
-      // login olsun (apiKey değeri zaten yeni request path'inden geçmez,
-      // ama UI "Authenticated" görmesin).
-      version: 2,
+      // version 3 — SEC-101: legacy accessToken/refreshToken alanlarını
+      // localStorage'dan temizle. Eski oturumlar httpOnly cookie'lere
+      // sahip olmadığı için ilk request 401 alacak, refresh de
+      // başarısız olacak → kullanıcı login sayfasına yönlenir.
+      version: 3,
       migrate: (persistedState: unknown, fromVersion: number) => {
         const state = (persistedState ?? {}) as Record<string, unknown>
         if (fromVersion < 2) {
+          // Legacy BUG-1 fix: apiKey + auth_method=api_key drop.
           if ('apiKey' in state) delete state.apiKey
-          // Eski apiKey session'larını drop et — accessToken yoksa
-          // zaten isAuthenticated=true tutmak yanıltıcı.
-          if (state.accessToken == null) {
-            state.isAuthenticated = false
-            state.me = null
-            state.impersonatingBrandId = null
-          }
-          // me.auth_method "api_key" değerini "jwt"e taşı; tip artık tek varyant.
           const me = state.me as { auth_method?: string } | null
           if (me && me.auth_method !== 'jwt') me.auth_method = 'jwt'
+        }
+        if (fromVersion < 3) {
+          // SEC-101: localStorage'daki JWT'leri sil. Cookie yoksa zaten
+          // request başarısız olacak; isAuthenticated'i de false yap ki
+          // /login'e yönlendirme net olsun.
+          if ('accessToken' in state) delete state.accessToken
+          if ('refreshToken' in state) delete state.refreshToken
+          state.isAuthenticated = false
+          state.me = null
+          state.impersonatingBrandId = null
         }
         return state
       },
