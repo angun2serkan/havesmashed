@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
-use crate::services::{crypto, invite, wordlist};
+use crate::services::{crypto, csrf, invite, wordlist};
 use crate::AppState;
 
 // ── Cookie configuration (SEC-102) ───────────────────────────────
@@ -27,6 +27,10 @@ use crate::AppState;
 // ama isim ayırımı network panelinde ayırt etmeyi kolaylaştırır.
 const ACCESS_COOKIE_NAME: &str = "user_access_token";
 const ACCESS_COOKIE_PATH: &str = "/api";
+// SEC-103 — CSRF double-submit cookie. HttpOnly DEĞİL (JS okumalı),
+// SameSite=Strict. Path access cookie ile aynı.
+const CSRF_COOKIE_NAME: &str = "user_csrf_token";
+const CSRF_COOKIE_PATH: &str = "/api";
 
 fn build_cookie(name: &str, value: &str, path: &str, max_age: i64, secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };
@@ -35,18 +39,39 @@ fn build_cookie(name: &str, value: &str, path: &str, max_age: i64, secure: bool)
     )
 }
 
-fn auth_cookie(token: &str, max_age: i64, is_production: bool) -> String {
-    build_cookie(ACCESS_COOKIE_NAME, token, ACCESS_COOKIE_PATH, max_age, is_production)
+fn build_csrf_cookie(value: &str, max_age: i64, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!(
+        "{CSRF_COOKIE_NAME}={value}{secure_attr}; SameSite=Strict; Path={CSRF_COOKIE_PATH}; Max-Age={max_age}"
+    )
 }
 
-fn clear_auth_cookie(is_production: bool) -> String {
-    build_cookie(ACCESS_COOKIE_NAME, "", ACCESS_COOKIE_PATH, 0, is_production)
+/// ([access_cookie, csrf_cookie], csrf_token_raw). Raw CSRF token
+/// body'ye de eklenir ki frontend cookie parse'ı problem yaşarsa
+/// fallback olarak okuyabilsin.
+fn auth_cookies(token: &str, max_age: i64, is_production: bool) -> ([String; 2], String) {
+    let csrf_token = csrf::generate_token();
+    let cookies = [
+        build_cookie(ACCESS_COOKIE_NAME, token, ACCESS_COOKIE_PATH, max_age, is_production),
+        build_csrf_cookie(&csrf_token, max_age, is_production),
+    ];
+    (cookies, csrf_token)
 }
 
-fn json_with_cookie(body: serde_json::Value, cookie: String) -> Response {
+fn clear_auth_cookies(is_production: bool) -> [String; 2] {
+    [
+        build_cookie(ACCESS_COOKIE_NAME, "", ACCESS_COOKIE_PATH, 0, is_production),
+        build_csrf_cookie("", 0, is_production),
+    ]
+}
+
+fn json_with_cookies(body: serde_json::Value, cookies: [String; 2]) -> Response {
     let mut response = Json(body).into_response();
-    if let Ok(value) = HeaderValue::from_str(&cookie) {
-        response.headers_mut().append(SET_COOKIE, value);
+    let headers = response.headers_mut();
+    for cookie in cookies {
+        if let Ok(value) = HeaderValue::from_str(&cookie) {
+            headers.append(SET_COOKIE, value);
+        }
     }
     response
 }
@@ -174,21 +199,25 @@ async fn register(
         expires_in: state.config.jwt_expiry_secs,
     };
 
-    // SEC-102: token'ı hem cookie hem body'de döndür. Frontend cookie
-    // path'ine geçti; body'deki kopya legacy/tooling için bir release
-    // boyunca korunuyor (sonraki PR'da silinecek).
-    let cookie = auth_cookie(
+    // SEC-102 access cookie + SEC-103 CSRF cookie.
+    let (cookies, csrf_token) = auth_cookies(
         &token,
         state.config.jwt_expiry_secs as i64,
         state.config.is_production,
     );
-    Ok(json_with_cookie(
+    Ok(json_with_cookies(
         serde_json::json!({
             "success": true,
-            "data": resp,
+            "data": {
+                "user_id": resp.user_id,
+                "secret_phrase": resp.secret_phrase,
+                "token": resp.token,
+                "expires_in": resp.expires_in,
+                "csrf_token": csrf_token,
+            },
             "error": null
         }),
-        cookie,
+        cookies,
     ))
 }
 
@@ -232,18 +261,24 @@ async fn login(
         nickname,
     };
 
-    let cookie = auth_cookie(
+    let (cookies, csrf_token) = auth_cookies(
         &token,
         state.config.jwt_expiry_secs as i64,
         state.config.is_production,
     );
-    Ok(json_with_cookie(
+    Ok(json_with_cookies(
         serde_json::json!({
             "success": true,
-            "data": resp,
+            "data": {
+                "token": resp.token,
+                "expires_in": resp.expires_in,
+                "user_id": resp.user_id,
+                "nickname": resp.nickname,
+                "csrf_token": csrf_token,
+            },
             "error": null
         }),
-        cookie,
+        cookies,
     ))
 }
 
@@ -253,13 +288,13 @@ async fn login(
 /// kalır, ama browser cookie expire edildiği için pratik olarak
 /// kullanılamaz.
 async fn logout(State(state): State<AppState>) -> Result<Response, AppError> {
-    Ok(json_with_cookie(
+    Ok(json_with_cookies(
         serde_json::json!({
             "success": true,
             "data": { "ok": true },
             "error": null
         }),
-        clear_auth_cookie(state.config.is_production),
+        clear_auth_cookies(state.config.is_production),
     ))
 }
 
@@ -321,19 +356,24 @@ async fn set_nickname(
         expires_in: state.config.jwt_expiry_secs,
     };
 
-    // SEC-102: nickname yeni claim taşıdığı için cookie'yi de yenile.
-    let cookie = auth_cookie(
+    // SEC-102 + SEC-103: nickname yeni claim taşıdığı için cookie + CSRF rotate.
+    let (cookies, csrf_token) = auth_cookies(
         &token,
         state.config.jwt_expiry_secs as i64,
         state.config.is_production,
     );
-    Ok(json_with_cookie(
+    Ok(json_with_cookies(
         serde_json::json!({
             "success": true,
-            "data": resp,
+            "data": {
+                "nickname": resp.nickname,
+                "token": resp.token,
+                "expires_in": resp.expires_in,
+                "csrf_token": csrf_token,
+            },
             "error": null
         }),
-        cookie,
+        cookies,
     ))
 }
 

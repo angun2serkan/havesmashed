@@ -38,7 +38,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::middleware::admin_context::{AdminClaims, AdminContext, AdminRole};
-use crate::services::password;
+use crate::services::{csrf, password};
 use crate::AppState;
 
 const ACCESS_TTL_SECS: i64 = 60 * 60;        // 1 hour
@@ -63,6 +63,12 @@ pub(crate) const REFRESH_COOKIE_NAME: &str = "admin_refresh_token";
 const ACCESS_COOKIE_PATH: &str = "/api/admin";
 const REFRESH_COOKIE_PATH: &str = "/api/admin/auth/refresh";
 
+// SEC-103 — CSRF double-submit token. HttpOnly DEĞİL (frontend JS okumalı),
+// SameSite=Strict, access cookie ile aynı path scope. Token her login/
+// refresh/change-password'da rotate edilir.
+const CSRF_COOKIE_NAME: &str = "admin_csrf_token";
+const CSRF_COOKIE_PATH: &str = "/api/admin";
+
 fn build_cookie(name: &str, value: &str, path: &str, max_age: i64, secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };
     format!(
@@ -70,8 +76,22 @@ fn build_cookie(name: &str, value: &str, path: &str, max_age: i64, secure: bool)
     )
 }
 
-fn auth_cookies(access: &str, refresh: &str, is_production: bool) -> [String; 2] {
-    [
+/// SEC-103: CSRF cookie HttpOnly DEĞİL — frontend JS okumak zorunda
+/// (double-submit pattern). Diğer attribute'lar access cookie ile aynı.
+fn build_csrf_cookie(value: &str, max_age: i64, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!(
+        "{CSRF_COOKIE_NAME}={value}{secure_attr}; SameSite=Strict; Path={CSRF_COOKIE_PATH}; Max-Age={max_age}"
+    )
+}
+
+/// (access_cookie, refresh_cookie, csrf_cookie, csrf_token_value).
+/// CSRF token'ını response body'sine de koyabilmek için raw değer
+/// olarak da döndürüyoruz (frontend ilk login'de header'a yerleştirebilir
+/// ya da cookie'den de okuyabilir).
+fn auth_cookies(access: &str, refresh: &str, is_production: bool) -> ([String; 3], String) {
+    let csrf_token = csrf::generate_token();
+    let cookies = [
         build_cookie(
             ACCESS_COOKIE_NAME,
             access,
@@ -86,10 +106,12 @@ fn auth_cookies(access: &str, refresh: &str, is_production: bool) -> [String; 2]
             REFRESH_TTL_SECS,
             is_production,
         ),
-    ]
+        build_csrf_cookie(&csrf_token, ACCESS_TTL_SECS, is_production),
+    ];
+    (cookies, csrf_token)
 }
 
-fn clear_auth_cookies(is_production: bool) -> [String; 2] {
+fn clear_auth_cookies(is_production: bool) -> [String; 3] {
     [
         build_cookie(
             ACCESS_COOKIE_NAME,
@@ -105,16 +127,17 @@ fn clear_auth_cookies(is_production: bool) -> [String; 2] {
             0,
             is_production,
         ),
+        build_csrf_cookie("", 0, is_production),
     ]
 }
 
-fn json_with_cookies(body: Value, cookies: [String; 2]) -> Response {
+fn json_with_cookies(body: Value, cookies: [String; 3]) -> Response {
     let mut response = Json(body).into_response();
     let headers = response.headers_mut();
     for cookie in cookies {
-        // Cookie değeri ASCII printable kalıyor (base64 JWT) — parse hatası
-        // pratikte imkansız; yine de Result'ı silently drop ediyoruz ki bir
-        // teorik fuzz girdisi response'u kırmasın.
+        // Cookie değeri ASCII printable kalıyor (base64 JWT/token) — parse
+        // hatası pratikte imkansız; yine de Result'ı silently drop ediyoruz
+        // ki bir teorik fuzz girdisi response'u kırmasın.
         if let Ok(value) = HeaderValue::from_str(&cookie) {
             headers.append(SET_COOKIE, value);
         }
@@ -182,10 +205,9 @@ async fn login(
             // Refresh ve admin_context bu sentinel'i tanır ve özel yol işler.
             let (access_token, refresh_token) =
                 issue_super_tokens(&state.config.jwt_secret, None)?;
-            // SEC-101: tokenları hem cookie hem body'de döndür. Frontend
-            // cookie path'ine geçti; body'deki kopya legacy/tooling için
-            // bir release korunuyor, sonraki PR'da silinecek.
-            let cookies =
+            // SEC-101: token'ları hem cookie hem body'de döndür. SEC-103:
+            // CSRF token cookie'si (JS-okunabilir) + body'de raw değer.
+            let (cookies, csrf_token) =
                 auth_cookies(&access_token, &refresh_token, state.config.is_production);
             return Ok(json_with_cookies(
                 json!({
@@ -194,6 +216,7 @@ async fn login(
                         "auth_method": "jwt",
                         "access_token": access_token,
                         "refresh_token": refresh_token,
+                        "csrf_token": csrf_token,
                         "must_change_password": false,
                         "user": {
                             "id": null,
@@ -273,7 +296,8 @@ async fn login(
     let (access_token, refresh_token) =
         issue_tokens(&state.config.jwt_secret, &user, &role, None)?;
 
-    let cookies = auth_cookies(&access_token, &refresh_token, state.config.is_production);
+    let (cookies, csrf_token) =
+        auth_cookies(&access_token, &refresh_token, state.config.is_production);
     Ok(json_with_cookies(
         json!({
             "success": true,
@@ -281,6 +305,7 @@ async fn login(
                 "auth_method": "jwt",
                 "access_token": access_token,
                 "refresh_token": refresh_token,
+                "csrf_token": csrf_token,
                 "must_change_password": user.must_change_password,
                 "user": {
                     "id": user.id,
@@ -414,13 +439,15 @@ async fn refresh(
         }
         let (access_token, refresh_token) =
             issue_super_tokens(&state.config.jwt_secret, claims.imp)?;
-        let cookies = auth_cookies(&access_token, &refresh_token, state.config.is_production);
+        let (cookies, csrf_token) =
+            auth_cookies(&access_token, &refresh_token, state.config.is_production);
         return Ok(json_with_cookies(
             json!({
                 "success": true,
                 "data": {
                     "access_token": access_token,
                     "refresh_token": refresh_token,
+                    "csrf_token": csrf_token,
                     "must_change_password": false,
                 },
                 "error": null,
@@ -453,13 +480,15 @@ async fn refresh(
     let (access_token, refresh_token) =
         issue_tokens(&state.config.jwt_secret, &user, &role, claims.imp)?;
 
-    let cookies = auth_cookies(&access_token, &refresh_token, state.config.is_production);
+    let (cookies, csrf_token) =
+        auth_cookies(&access_token, &refresh_token, state.config.is_production);
     Ok(json_with_cookies(
         json!({
             "success": true,
             "data": {
                 "access_token": access_token,
                 "refresh_token": refresh_token,
+                "csrf_token": csrf_token,
                 "must_change_password": user.must_change_password,
             },
             "error": null,
@@ -607,13 +636,15 @@ async fn change_password(
     let (access_token, refresh_token) =
         issue_tokens(&state.config.jwt_secret, &user, &role, ctx.impersonating_brand_id)?;
 
-    let cookies = auth_cookies(&access_token, &refresh_token, state.config.is_production);
+    let (cookies, csrf_token) =
+        auth_cookies(&access_token, &refresh_token, state.config.is_production);
     Ok(json_with_cookies(
         json!({
             "success": true,
             "data": {
                 "access_token": access_token,
                 "refresh_token": refresh_token,
+                "csrf_token": csrf_token,
                 "must_change_password": false,
             },
             "error": null,

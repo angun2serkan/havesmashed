@@ -15,23 +15,9 @@ export function LoginPage() {
     setError("");
 
     try {
-      // SEC-102: cookie auth — credentials: 'include' ile cookie set edilir,
-      // body'deki `token` alanı artık kullanılmıyor (backend sadece
-      // backward compat için döndürüyor).
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secret_phrase: secretPhrase }),
-      });
-
-      const json = await res.json();
-
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || "Login failed");
-      }
-
-      const { user_id, nickname } = json.data;
+      // SEC-102 + SEC-103: api.login wrapper'ı credentials + CSRF header'ı
+      // otomatik yönetir. Eski direct fetch path'i kaldırıldı.
+      const { user_id, nickname } = await api.login(secretPhrase);
 
       setAuth({
         id: user_id,
