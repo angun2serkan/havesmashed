@@ -19,20 +19,22 @@ export interface AdminMe {
   must_change_password: boolean
   password_changed_at: string | null
   impersonating_brand: BrandRef | null
-  auth_method: 'jwt' | 'api_key'
+  // BUG-1 fix sonrası backend her zaman 'jwt' döndürür. Tip korunuyor
+  // ki eski persisted state migration sırasında sorun yaşamasın.
+  auth_method: 'jwt'
 }
 
 interface AdminState {
-  // Auth credentials
+  // Auth credentials. BUG-1 fix: legacy `apiKey` alanı tamamen kaldırıldı;
+  // env-super da JWT taşır (admin_user_id===null ile ayırt edilir).
   accessToken: string | null
   refreshToken: string | null
-  // super_admin: env-tabanlı ADMIN_API_KEY
-  apiKey: string | null
   // Identity (loaded after /me)
   me: AdminMe | null
   // Env-super impersonation state — frontend her request'te
   // `X-Impersonate-Brand` header'ı olarak gönderir; backend state
-  // tutmaz, sadece header'a güvenir.
+  // tutmaz, sadece header'a güvenir. brand_admin token'ları için her
+  // zaman null kalır (backend zaten ignore eder).
   impersonatingBrandId: string | null
 
   // Computed
@@ -40,7 +42,6 @@ interface AdminState {
 
   // Mutators
   setTokens: (access: string, refresh: string) => void
-  setApiKey: (key: string) => void
   setMe: (me: AdminMe | null) => void
   clearImpersonation: () => void
   setImpersonating: (brand: BrandRef) => void
@@ -52,7 +53,6 @@ export const useAdminStore = create<AdminState>()(
     (set) => ({
       accessToken: null,
       refreshToken: null,
-      apiKey: null,
       me: null,
       impersonatingBrandId: null,
       isAuthenticated: false,
@@ -61,16 +61,7 @@ export const useAdminStore = create<AdminState>()(
         set({
           accessToken: access,
           refreshToken: refresh,
-          apiKey: null,
           impersonatingBrandId: null,
-          isAuthenticated: true,
-        }),
-
-      setApiKey: (key) =>
-        set({
-          apiKey: key,
-          accessToken: null,
-          refreshToken: null,
           isAuthenticated: true,
         }),
 
@@ -92,13 +83,48 @@ export const useAdminStore = create<AdminState>()(
         set({
           accessToken: null,
           refreshToken: null,
-          apiKey: null,
           me: null,
           impersonatingBrandId: null,
           isAuthenticated: false,
         }),
     }),
-    { name: 'havesmashed-admin' },
+    {
+      name: 'havesmashed-admin',
+      // BUG-1 fix: persisted state'i whitelist'le tut. Eski apiKey alanı
+      // (super_admin ADMIN_API_KEY'ini düz metin saklıyordu) artık şemada
+      // yok; partialize ilerideki write'larda alanı düşürür.
+      partialize: (s) => ({
+        accessToken: s.accessToken,
+        refreshToken: s.refreshToken,
+        me: s.me,
+        impersonatingBrandId: s.impersonatingBrandId,
+        isAuthenticated: s.isAuthenticated,
+      }),
+      // BUG-1 fix migration: eski tarayıcılarda localStorage'da
+      // `apiKey` ve eski `auth_method: "api_key"` değerleri kalmış
+      // olabilir. version=2 ile rehydrate sırasında alanı sil; ayrıca
+      // eski session'u logout'a düşür ki kullanıcı JWT akışıyla taze
+      // login olsun (apiKey değeri zaten yeni request path'inden geçmez,
+      // ama UI "Authenticated" görmesin).
+      version: 2,
+      migrate: (persistedState: unknown, fromVersion: number) => {
+        const state = (persistedState ?? {}) as Record<string, unknown>
+        if (fromVersion < 2) {
+          if ('apiKey' in state) delete state.apiKey
+          // Eski apiKey session'larını drop et — accessToken yoksa
+          // zaten isAuthenticated=true tutmak yanıltıcı.
+          if (state.accessToken == null) {
+            state.isAuthenticated = false
+            state.me = null
+            state.impersonatingBrandId = null
+          }
+          // me.auth_method "api_key" değerini "jwt"e taşı; tip artık tek varyant.
+          const me = state.me as { auth_method?: string } | null
+          if (me && me.auth_method !== 'jwt') me.auth_method = 'jwt'
+        }
+        return state
+      },
+    },
   ),
 )
 

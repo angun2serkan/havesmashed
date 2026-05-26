@@ -176,8 +176,9 @@ fn inject_utm(target_url: &str, utm_campaign: Option<&str>) -> String {
 }
 
 // ── Admin CRUD ────────────────────────────────────────────────
-// All admin endpoints take `AdminContext`; legacy ADMIN_API_KEY is
-// transparently accepted by the extractor itself.
+// All admin endpoints take `AdminContext` (JWT Bearer only).
+// Env-super JWT (claims.sub = Uuid::nil() sentinel) tanınır; eski
+// x-admin-key header path'i BUG-1 fix ile kaldırıldı.
 
 #[derive(Serialize)]
 struct DailyClick {

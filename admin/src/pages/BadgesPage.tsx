@@ -1,7 +1,6 @@
 import { useEffect, useState, useMemo, useRef, type FormEvent, type ChangeEvent } from 'react'
 import { Plus, Pencil, Trash2, X, Check, Upload, Filter, Smile, Sparkles, Award, MousePointerClick } from 'lucide-react'
 import { adminApi, type BadgeRow, type BadgeCriteria } from '@/services/api'
-import { BadgeSponsorModal } from '@/components/BadgeSponsorModal'
 import { BadgeCriteriaBuilder } from '@/components/BadgeCriteriaBuilder'
 import EmojiPicker, { Theme } from 'emoji-picker-react'
 
@@ -37,7 +36,6 @@ const emptyForm = {
 export default function BadgesPage() {
   const [badges, setBadges] = useState<BadgeRow[]>([])
   const [sponsorStats, setSponsorStats] = useState<Record<number, SponsorStat>>({})
-  const [sponsorEditId, setSponsorEditId] = useState<number | null>(null)
   const [form, setForm] = useState(emptyForm)
   const [criteria, setCriteria] = useState<BadgeCriteria | null>(null)
   const [loading, setLoading] = useState(false)
@@ -92,11 +90,6 @@ export default function BadgesPage() {
       return true
     })
   }, [badges, genderFilter, onlySponsored])
-
-  const sponsorEditingBadge = useMemo(
-    () => badges.find((b) => b.id === sponsorEditId) ?? null,
-    [badges, sponsorEditId],
-  )
 
   async function handleImageUpload(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -571,17 +564,6 @@ export default function BadgesPage() {
                   </div>
                   <div className="flex gap-1">
                     <button
-                      onClick={() => setSponsorEditId(badge.id)}
-                      title={badge.is_sponsored ? 'Edit sponsor' : 'Add sponsor'}
-                      className={`p-1.5 rounded transition-colors ${
-                        badge.is_sponsored
-                          ? 'bg-yellow-500/20 text-yellow-300 hover:bg-yellow-500/30'
-                          : 'bg-dark-700 text-dark-400 hover:bg-dark-600 hover:text-yellow-300'
-                      }`}
-                    >
-                      <Sparkles size={14} />
-                    </button>
-                    <button
                       onClick={() => startEdit(badge)}
                       className="p-1.5 rounded bg-neon-500/20 text-neon-400 hover:bg-neon-500/30 transition-colors"
                     >
@@ -651,16 +633,6 @@ export default function BadgesPage() {
         )}
       </div>
 
-      {sponsorEditingBadge && (
-        <BadgeSponsorModal
-          badge={sponsorEditingBadge}
-          onClose={() => setSponsorEditId(null)}
-          onSaved={() => {
-            setSponsorEditId(null)
-            fetchBadges()
-          }}
-        />
-      )}
     </div>
   )
 }

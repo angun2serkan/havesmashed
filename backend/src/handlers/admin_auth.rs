@@ -1,13 +1,18 @@
 // Admin user authentication: login, refresh, logout, change-password,
 // /me, and "act as brand" impersonation.
 //
-// İki ayrı kimlik modeli:
-//   * super_admin → env-tabanlı (ADMIN_API_NAME + ADMIN_API_KEY).
-//     Login akışı yok; admin paneli /me'yi ADMIN_API_KEY ile çağırır.
-//     Impersonation `/impersonate` ile başlar (audit), `X-Impersonate-Brand`
-//     header'ı ile sürdürülür.
+// İki ayrı kimlik modeli — TEK transport (JWT):
 //   * brand_admin → admin_users tablosundaki email + password.
-//     Login → JWT (1h access + 30d refresh).
+//     Login → JWT (1h access + 30d refresh). claims.sub = admin_user_id.
+//   * super_admin → env-tabanlı (ADMIN_API_NAME + ADMIN_API_KEY).
+//     Login → JWT (1h access + 30d refresh). claims.sub = Uuid::nil()
+//     sentinel + claims.role = "super_admin". DB satırı yok.
+//     Impersonation: `/impersonate` audit yazar, frontend
+//     `X-Impersonate-Brand` header'ı ile state'i sürdürür.
+//
+// Eski `x-admin-key` header path'i BUG-1 fix ile kaldırıldı; env-super
+// artık tarayıcıda localStorage'da düz API key bırakmaz, kısa ömürlü
+// JWT taşır.
 //
 // T0.3 force-change semantics (brand_admin):
 //   * `must_change_password=TRUE` ise login başarılı olur ama token
@@ -15,6 +20,8 @@
 //     guard'ı diğer tüm endpoint'leri reddeder.
 //   * change-password endpoint'i `pwc:true` token'ını kabul eder,
 //     flag'i temizler ve `pwc` olmadan yeni token döner.
+//   * env-super'in pwc'si yoktur (DB satırı yok), refresh akışında
+//     `sub == Uuid::nil()` kısa-yolu çalışır.
 
 use axum::extract::State;
 use axum::routing::{get, post};
@@ -91,10 +98,17 @@ async fn login(
         }
         if body.password == state.config.admin_api_key {
             let _: Result<(), _> = redis.del(&super_lock_key).await;
+            // Env-super JWT: sub=Uuid::nil() sentinel, role=super_admin.
+            // DB satırı yok; identity tamamen env değişkenlerinden gelir.
+            // Refresh ve admin_context bu sentinel'i tanır ve özel yol işler.
+            let (access_token, refresh_token) =
+                issue_super_tokens(&state.config.jwt_secret, None)?;
             return Ok(Json(json!({
                 "success": true,
                 "data": {
-                    "auth_method": "api_key",
+                    "auth_method": "jwt",
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
                     "must_change_password": false,
                     "user": {
                         "id": null,
@@ -227,6 +241,32 @@ fn issue_tokens(
     Ok((access, refresh))
 }
 
+/// Env-super token mint helper. `sub = Uuid::nil()` sentinel + role=super_admin;
+/// DB lookup yok. `impersonating` parametresi `/impersonate` flow'unu
+/// gelecekteki bir refactor token'a taşımak isterse kullanılabilir (şu an
+/// frontend X-Impersonate-Brand header'ı ile state'i sürdürüyor, bu yüzden
+/// burada her zaman None geliyor).
+fn issue_super_tokens(
+    secret: &str,
+    impersonating: Option<Uuid>,
+) -> Result<(String, String), AppError> {
+    let now = Utc::now().timestamp();
+    let mk_claims = |exp_offset: i64| AdminClaims {
+        sub: Uuid::nil(),
+        role: AdminRole::Super.as_str().to_string(),
+        brand_id: None,
+        imp: impersonating,
+        pwc: false,
+        iat: now,
+        exp: now + exp_offset,
+    };
+    let key = EncodingKey::from_secret(secret.as_bytes());
+    let header = Header::new(Algorithm::HS256);
+    let access = encode(&header, &mk_claims(ACCESS_TTL_SECS), &key).map_err(AppError::Jwt)?;
+    let refresh = encode(&header, &mk_claims(REFRESH_TTL_SECS), &key).map_err(AppError::Jwt)?;
+    Ok((access, refresh))
+}
+
 // ════════════════════════════════════════════════════════════════
 // POST /api/admin/auth/refresh
 // ════════════════════════════════════════════════════════════════
@@ -246,6 +286,39 @@ async fn refresh(
     let data = jsonwebtoken::decode::<AdminClaims>(&body.refresh_token, &key, &validation)?;
     let claims = data.claims;
 
+    // ── Env-super refresh: sub=Uuid::nil() sentinel ─────────────
+    // DB satırı olmadığı için fresh mint yeterli; impersonation
+    // claim'i (imp) korunur. Yanlış token'ı (sub=nil ama role!=super)
+    // reddet. Ayrıca env-super credential'ları runtime'da boşaltılmışsa
+    // (config rotation, test env), token'ı reddet — kimlik kaynağı
+    // ortadan kalktığında eski token süresi dolana kadar kabul edilmemeli.
+    if claims.sub == Uuid::nil() {
+        if claims.role != AdminRole::Super.as_str() {
+            return Err(AppError::Unauthorized(
+                "nil-sub token must carry role=super_admin".to_string(),
+            ));
+        }
+        if state.config.admin_api_key.is_empty()
+            || state.config.admin_api_name.is_empty()
+        {
+            return Err(AppError::Unauthorized(
+                "env-super credentials not configured".to_string(),
+            ));
+        }
+        let (access_token, refresh_token) =
+            issue_super_tokens(&state.config.jwt_secret, claims.imp)?;
+        return Ok(Json(json!({
+            "success": true,
+            "data": {
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "must_change_password": false,
+            },
+            "error": null,
+        })));
+    }
+
+    // ── Brand_admin refresh ────────────────────────────────────
     // Re-fetch the user — must_change_password, role, brand_id may
     // have changed since token issue. Refresh always reflects DB truth.
     let user: AdminUserRow = sqlx::query_as(
@@ -312,7 +385,11 @@ async fn change_password(
     // ADMIN_API_KEY synthetic super has no user to change password for.
     let admin_user_id = ctx
         .admin_user_id
-        .ok_or_else(|| AppError::Forbidden("legacy admin key has no password".to_string()))?;
+        .ok_or_else(|| {
+            AppError::Forbidden(
+                "env-super has no password — şifre `.env` üzerinden yönetilir".to_string(),
+            )
+        })?;
 
     password::validate_password_policy(&body.new_password)?;
 
@@ -436,7 +513,9 @@ async fn me(
                 "must_change_password": false,
                 "password_changed_at": null,
                 "impersonating_brand": impersonating_brand,
-                "auth_method": "api_key",
+                // BUG-1 sonrası env-super da JWT taşır. UI hâlâ env-super'i
+                // ayırt etmek için `admin_user_id === null` kontrolünü kullanır.
+                "auth_method": "jwt",
             },
             "error": null,
         })));

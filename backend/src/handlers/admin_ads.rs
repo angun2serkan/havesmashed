@@ -1,9 +1,10 @@
 // Admin endpoints for ad inventory: placements, campaigns, creative upload.
 //
-// AUTH MODEL (Faz 2 refactor):
-//   * Every endpoint extracts `AdminContext` instead of calling
-//     verify_admin manually. Legacy ADMIN_API_KEY still works (mapped
-//     to synthetic super_admin) — see middleware/admin_context.rs.
+// AUTH MODEL:
+//   * Every endpoint extracts `AdminContext` (JWT Bearer only).
+//     Env-super JWT taşır: claims.sub = Uuid::nil() sentinel +
+//     role=super_admin. Eski x-admin-key header path'i BUG-1 fix
+//     ile kaldırıldı — bk. middleware/admin_context.rs.
 //   * Brand-scoped query pattern:
 //       WHERE ($1::uuid IS NULL OR brand_id = $1) AND deleted_at IS NULL
 //     bound to ctx.brand_scope(). Super sees all; brand_admin (and
@@ -206,6 +207,31 @@ fn validate_badge_spec(spec: &BadgeSpec) -> Result<(), AppError> {
             .map_err(|e| AppError::BadRequest(format!("badge criteria: {e}")))?;
     }
     Ok(())
+}
+
+/// 23505 unique violation'ı kullanıcıya gösterilebilir mesaja çevirir.
+/// Brand badge'leri için üç unique scope var:
+///   - badges_name_key                              → globally unique badge name
+///   - idx_brand_badges_description_lower           → brand badge description (case-insensitive)
+///   - idx_badge_sponsor_campaigns_click_url_lower  → badge_sponsor kampanyalarında click_url (case-insensitive)
+fn map_badge_unique_violation(e: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(db_err) = &e {
+        if db_err.code().as_deref() == Some("23505") {
+            let constraint = db_err.constraint().unwrap_or("");
+            let msg = match constraint {
+                "badges_name_key" => "Bu isimde bir badge zaten mevcut, farklı bir isim seçin",
+                "idx_brand_badges_description_lower" => {
+                    "Bu açıklamayla bir badge zaten mevcut, farklı bir açıklama yazın"
+                }
+                "idx_badge_sponsor_campaigns_click_url_lower" => {
+                    "Bu yönlendirme linkiyle bir badge_sponsor kampanyası zaten mevcut, farklı bir link kullanın"
+                }
+                _ => "Badge alanı çakışıyor, farklı değerler deneyin",
+            };
+            return AppError::Conflict(msg.to_string());
+        }
+    }
+    AppError::Sqlx(e)
 }
 
 /// Brand badge'inin status'ünü kampanyanın status'üne eşitler.
@@ -1143,7 +1169,8 @@ async fn create_campaign(
     .bind(included_impressions)
     .bind(body.duration_months)
     .execute(&mut *tx)
-    .await?;
+    .await
+    .map_err(map_badge_unique_violation)?;
 
     if let Some(spec) = badge_spec {
         // tier='premium' brand badge'lere otomatik atanır — sözleşmenin
@@ -1158,15 +1185,18 @@ async fn create_campaign(
             .map_err(|e| {
                 AppError::Internal(format!("badge criteria serialize: {e}"))
             })?;
+        // sponsor_click_url badges'ten kaldırıldı (migration 054). Brand
+        // badge'inin redirect URL'i ad_campaigns.click_url'den okunur —
+        // tek source of truth.
         sqlx::query(
             r#"
             INSERT INTO badges
                 (name, description, icon, category, threshold, image_url,
                  gender, is_sponsored, sponsor_name, sponsor_logo_url,
-                 sponsor_click_url, brand_id, campaign_id, status, tier, criteria)
+                 brand_id, campaign_id, status, tier, criteria)
             VALUES ($1, $2, $3, $4, $5, $6,
                     COALESCE($7, 'both'), TRUE, $8, NULL,
-                    $9, $10, $11, 'draft', 'premium', $12)
+                    $9, $10, 'draft', 'premium', $11)
             "#,
         )
         .bind(&spec.name)
@@ -1177,22 +1207,12 @@ async fn create_campaign(
         .bind(spec.image_url.as_deref())
         .bind(spec.gender.as_deref())
         .bind(&brand_name)
-        .bind(&body.click_url)
         .bind(effective_brand_id)
         .bind(id)
         .bind(criteria_json)
         .execute(&mut *tx)
         .await
-        .map_err(|e| {
-            if let sqlx::Error::Database(db_err) = &e {
-                if db_err.code().as_deref() == Some("23505") {
-                    return AppError::Conflict(
-                        "badge name already exists; pick a different name".to_string(),
-                    );
-                }
-            }
-            AppError::Sqlx(e)
-        })?;
+        .map_err(map_badge_unique_violation)?;
     }
 
     tx.commit().await?;
@@ -1263,7 +1283,9 @@ async fn get_campaign(
 #[derive(Deserialize)]
 struct UpdateCampaignBody {
     creative: Option<Value>,
-    click_url: Option<String>,
+    // click_url is intentionally NOT in this struct. The redirect URL is
+    // locked at campaign creation and cannot be edited — prevents brands
+    // from silently re-targeting a running ad to a different landing page.
     target_segment: Option<Option<Value>>,
     starts_at: Option<DateTime<Utc>>,
     ends_at: Option<DateTime<Utc>>,
@@ -1337,22 +1359,20 @@ async fn update_campaign(
         r#"
         UPDATE ad_campaigns SET
             creative       = COALESCE($2, creative),
-            click_url      = COALESCE($3, click_url),
-            target_segment = CASE WHEN $4::boolean THEN $5 ELSE target_segment END,
-            starts_at      = COALESCE($6, starts_at),
-            ends_at        = COALESCE($7, ends_at),
-            weight         = COALESCE($8, weight),
-            is_dry_run     = COALESCE($9, is_dry_run),
-            pricing_model      = COALESCE($10, pricing_model),
-            unit_price_cents   = COALESCE($11, unit_price_cents),
-            total_budget_cents = COALESCE($12, total_budget_cents),
+            target_segment = CASE WHEN $3::boolean THEN $4 ELSE target_segment END,
+            starts_at      = COALESCE($5, starts_at),
+            ends_at        = COALESCE($6, ends_at),
+            weight         = COALESCE($7, weight),
+            is_dry_run     = COALESCE($8, is_dry_run),
+            pricing_model      = COALESCE($9, pricing_model),
+            unit_price_cents   = COALESCE($10, unit_price_cents),
+            total_budget_cents = COALESCE($11, total_budget_cents),
             updated_at     = NOW()
         WHERE id = $1
         "#,
     )
     .bind(id)
     .bind(body.creative.as_ref())
-    .bind(body.click_url.as_deref())
     .bind(body.target_segment.is_some())
     .bind(body.target_segment.as_ref().and_then(|x| x.as_ref()))
     .bind(body.starts_at)
@@ -1744,11 +1764,12 @@ async fn get_campaign_badge(
         Option<String>,
     )> = sqlx::query_as(
         r#"
-        SELECT id, name, description, icon, category, threshold, image_url,
-               gender, is_sponsored, sponsor_name, sponsor_logo_url,
-               sponsor_click_url, brand_id, status, tier
-        FROM badges
-        WHERE campaign_id = $1
+        SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, b.image_url,
+               b.gender, b.is_sponsored, b.sponsor_name, b.sponsor_logo_url,
+               c.click_url AS sponsor_click_url, b.brand_id, b.status, b.tier
+        FROM badges b
+        JOIN ad_campaigns c ON c.id = b.campaign_id
+        WHERE b.campaign_id = $1
         "#,
     )
     .bind(id)
