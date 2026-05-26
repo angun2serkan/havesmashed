@@ -19,6 +19,19 @@ use crate::AppState;
 /// SEC-105 logout-all scope label — Redis key namespacing.
 pub const REVOCATION_SCOPE_USER: &str = "user";
 
+/// SEC-106 — JWT issuer; tüm haveismash JWT'leri için ortak. Audience'la
+/// birlikte cross-context token reuse (CWE-863) kapatır: aynı JWT_SECRET'i
+/// paylaşan başka bir servis aynı imza algoritmasıyla token üretse bile
+/// issuer kontrolünden geçemez.
+pub const JWT_ISSUER: &str = "haveismash.com";
+
+/// SEC-106 — user JWT audience. Admin token'ı user endpoint'inde (veya
+/// tersi) kullanılırsa audience mismatch ile 401.
+pub const JWT_AUDIENCE_USER: &str = "user";
+
+/// SEC-106 — admin JWT audience.
+pub const JWT_AUDIENCE_ADMIN: &str = "admin";
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: Uuid,
@@ -27,6 +40,13 @@ pub struct Claims {
     /// SEC-105 öncesi issue edilmiş legacy token'larda alan yok.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jti: Option<Uuid>,
+    /// SEC-106 — issuer + audience claims. Option çünkü SEC-106 öncesi
+    /// token'lar bu alanları taşımıyor; bir release grace period sonra
+    /// zorunlu yapılacak.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aud: Option<String>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -75,9 +95,28 @@ impl FromRequestParts<AppState> for AuthUser {
         let decoding_key = DecodingKey::from_secret(state.config.jwt_secret.as_bytes());
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_required_spec_claims(&["sub", "exp", "iat"]);
+        // SEC-106: manuel doğruluyoruz (legacy token'larda iss/aud yok).
+        // jsonwebtoken default'unda validate_aud=true; aud claim yoksa
+        // hata verir → legacy uyumu için kapatıyoruz.
+        validation.validate_aud = false;
 
         let token_data = decode::<Claims>(&token, &decoding_key, &validation)?;
         let claims = token_data.claims;
+
+        // SEC-106 — iss/aud manuel kontrolü. Token bu alanları taşıyorsa
+        // beklenen değerle eşleşmek zorunda; yoksa legacy grace period.
+        if let Some(iss) = claims.iss.as_deref() {
+            if iss != JWT_ISSUER {
+                return Err(AppError::Unauthorized("invalid token issuer".to_string()));
+            }
+        }
+        if let Some(aud) = claims.aud.as_deref() {
+            if aud != JWT_AUDIENCE_USER {
+                return Err(AppError::Unauthorized(
+                    "token audience mismatch".to_string(),
+                ));
+            }
+        }
 
         // SEC-105 — JTI revocation + logout-all-before check'leri.
         // Legacy token'larda jti yok → skip (grace period); logout-all
