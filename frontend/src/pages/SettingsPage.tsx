@@ -132,6 +132,24 @@ export function SettingsPage() {
     logout();
   };
 
+  // SEC-105 — "tüm cihazlardan çıkış". Server bu user için logout-all
+  // timestamp set eder; tüm açık session'lar geçersiz olur (bu cihaz
+  // dahil). Telefon kaybı / paylaşılan cihaz senaryoları için.
+  const [logoutAllPending, setLogoutAllPending] = useState(false);
+  const handleLogoutAll = async () => {
+    const confirmed = window.confirm(
+      "Tüm cihazlardan çıkış yapılacak — bu cihaz dahil. Devam edilsin mi?",
+    );
+    if (!confirmed) return;
+    setLogoutAllPending(true);
+    try {
+      await api.logoutAll();
+    } catch {
+      // best-effort — yine de local state'i temizle
+    }
+    logout();
+  };
+
   return (
     <div className="min-h-screen p-4 md:p-8 pb-20 md:pb-8">
       <h1 className="text-2xl font-bold text-white mb-6">Settings</h1>
@@ -359,6 +377,15 @@ export function SettingsPage() {
           onClick={handleLogout}
         >
           Sign Out
+        </Button>
+
+        <Button
+          variant="ghost"
+          className="w-full text-red-400 hover:text-red-300"
+          onClick={handleLogoutAll}
+          disabled={logoutAllPending}
+        >
+          {logoutAllPending ? "Signing out everywhere…" : "Sign out of all devices"}
         </Button>
         </div>
       </div>

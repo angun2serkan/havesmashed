@@ -141,6 +141,12 @@ export const api = {
   logout: () =>
     request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
 
+  // SEC-105 — "tüm cihazlardan çıkış". Bu user için server-side
+  // logout-all timestamp set edilir; tüm açık session'lar geçersiz
+  // olur (telefon kaybı, paylaşılan cihaz, şüpheli aktivite).
+  logoutAll: () =>
+    request<{ ok: boolean }>("/auth/logout-all", { method: "POST" }),
+
   setNickname: (nickname: string) =>
     request<{ nickname: string; token: string; expires_in: number }>(
       "/auth/nickname",

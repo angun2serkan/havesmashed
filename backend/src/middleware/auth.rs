@@ -13,12 +13,20 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::services::jwt_revocation;
 use crate::AppState;
+
+/// SEC-105 logout-all scope label — Redis key namespacing.
+pub const REVOCATION_SCOPE_USER: &str = "user";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: Uuid,
     pub nickname: Option<String>,
+    /// SEC-105 — token-unique id; Redis revocation list key. Option:
+    /// SEC-105 öncesi issue edilmiş legacy token'larda alan yok.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jti: Option<Uuid>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -28,6 +36,12 @@ pub struct Claims {
 pub struct AuthUser {
     pub user_id: Uuid,
     pub nickname: Option<String>,
+    /// SEC-105 — current token's JTI (None for legacy tokens).
+    pub jti: Option<Uuid>,
+    /// SEC-105 — token issue/expire timestamps; logout handler revocation
+    /// TTL'i hesabı için.
+    pub iat: i64,
+    pub exp: i64,
 }
 
 impl AuthUser {
@@ -63,10 +77,33 @@ impl FromRequestParts<AppState> for AuthUser {
         validation.set_required_spec_claims(&["sub", "exp", "iat"]);
 
         let token_data = decode::<Claims>(&token, &decoding_key, &validation)?;
+        let claims = token_data.claims;
+
+        // SEC-105 — JTI revocation + logout-all-before check'leri.
+        // Legacy token'larda jti yok → skip (grace period); logout-all
+        // her zaman çalışır.
+        let mut redis = state.redis.clone();
+        if let Some(jti) = claims.jti {
+            if jwt_revocation::is_jti_revoked(&mut redis, jti).await {
+                return Err(AppError::Unauthorized("token revoked".to_string()));
+            }
+        }
+        if let Some(threshold) =
+            jwt_revocation::logout_all_before(&mut redis, REVOCATION_SCOPE_USER, claims.sub).await
+        {
+            if claims.iat < threshold {
+                return Err(AppError::Unauthorized(
+                    "all sessions revoked — please log in again".to_string(),
+                ));
+            }
+        }
 
         Ok(AuthUser {
-            user_id: token_data.claims.sub,
-            nickname: token_data.claims.nickname,
+            user_id: claims.sub,
+            nickname: claims.nickname,
+            jti: claims.jti,
+            iat: claims.iat,
+            exp: claims.exp,
         })
     }
 }

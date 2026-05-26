@@ -152,6 +152,12 @@ export const authApi = {
   logout: () =>
     request<{ ok: boolean }>('/admin/auth/logout', { method: 'POST' }),
 
+  // SEC-105 — "tüm cihazlardan çıkış". Server-side Redis'e logout-all
+  // timestamp yazar; bu user için daha eski iat'li tüm token'lar
+  // (paralel açık session'lar dahil) anlık olarak geçersizleşir.
+  logoutAll: () =>
+    request<{ ok: boolean }>('/admin/auth/logout-all', { method: 'POST' }),
+
   changePassword: (current_password: string, new_password: string) =>
     request<{
       access_token: string

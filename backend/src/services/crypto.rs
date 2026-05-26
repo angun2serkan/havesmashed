@@ -25,7 +25,10 @@ fn normalize_phrase(phrase: &str) -> String {
         .join(" ")
 }
 
-/// Issue a JWT token signed with HS256.
+/// Issue a JWT token signed with HS256. Returns (token, jti).
+/// SEC-105 — her token unique JTI ile issue edilir; caller revocation
+/// için JTI'yi saklayabilir (logout cookie/header'dan tekrar parse
+/// etmek yerine).
 pub fn issue_jwt(
     user_id: Uuid,
     nickname: &Option<String>,
@@ -33,10 +36,12 @@ pub fn issue_jwt(
     expiry_secs: u64,
 ) -> Result<String, AppError> {
     let now = chrono::Utc::now().timestamp();
+    let jti = Uuid::new_v4();
 
     let claims = Claims {
         sub: user_id,
         nickname: nickname.clone(),
+        jti: Some(jti),
         iat: now,
         exp: now + expiry_secs as i64,
     };
