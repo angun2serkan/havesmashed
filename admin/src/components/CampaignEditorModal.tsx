@@ -495,9 +495,10 @@ export function CampaignEditorModal({
     setSaving(true)
     try {
       if (isEdit && initial) {
+        // click_url is locked at creation — backend ignores it on update.
+        // Sending it would be silently dropped; we omit it for clarity.
         await adminApi.updateCampaign(initial.id, {
           creative,
-          click_url: effectiveClickUrl,
           target_segment,
           starts_at: new Date(startsAt).toISOString(),
           ends_at: new Date(endsAt).toISOString(),
@@ -1039,17 +1040,36 @@ export function CampaignEditorModal({
             {/* forum_thread için click URL anlamsız — kullanıcı thread
                 detayına gider. gated_interstitial için de tıklama yok —
                 gate yalnızca date submit'i ilerletir. Diğer placement'lar
-                için affiliate-aware URL input. */}
+                için affiliate-aware URL input.
+
+                Edit modunda click URL kilitli — oluşturma anında verilir,
+                sonradan değiştirilemez (badge sponsor URL'i ile divergence
+                ve in-flight kampanyanın sessizce başka landing'e yönlenme
+                riskini önler). */}
             {!isForumThread && !isGatedInterstitial && (
               <Field
                 label="Click URL"
-                hint="Elle URL girin veya sağdaki butonla affiliate link'lerinizden seçin."
+                hint={
+                  isEdit
+                    ? 'Click URL kampanya oluşturulurken kilitlenir, sonradan değiştirilemez.'
+                    : "Elle URL girin veya sağdaki butonla affiliate link'lerinizden seçin."
+                }
               >
-                <UrlWithAffiliatePicker
-                  value={clickUrl}
-                  onChange={setClickUrl}
-                  placeholder="https://brand.com/landing"
-                />
+                {isEdit ? (
+                  <input
+                    type="url"
+                    value={clickUrl}
+                    readOnly
+                    disabled
+                    className="w-full bg-dark-900 border border-dark-700 rounded-lg px-3 py-2 text-sm text-dark-400 cursor-not-allowed"
+                  />
+                ) : (
+                  <UrlWithAffiliatePicker
+                    value={clickUrl}
+                    onChange={setClickUrl}
+                    placeholder="https://brand.com/landing"
+                  />
+                )}
               </Field>
             )}
 

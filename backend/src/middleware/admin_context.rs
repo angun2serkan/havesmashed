@@ -1,15 +1,21 @@
 // Admin authorization context extractor.
 //
-// Two auth mechanisms feed AdminContext:
-//   1. ADMIN_API_KEY header (`x-admin-key`) — env-tabanlı super_admin
-//      kimliği. `actor_name` config.admin_api_name'den doldurulur ve
-//      audit log'a yazılır. Impersonation `X-Impersonate-Brand` header'ı
-//      ile yapılır; sunucu state'i tutmaz, frontend her request'te
-//      header'ı tekrarlar.
-//   2. JWT Bearer token (issued by /api/admin/auth/login) — brand_admin
-//      auth. Decoded claims populate `admin_user_id`, `brand_id` ve
-//      `pwc` (password-change-required) flag'i. super_admin artık DB'de
-//      yok; JWT path'inde rol her zaman brand_admin olmalı.
+// Tek auth mekanizması: JWT Bearer token.
+//   * brand_admin     → admin_users tablosundan login + JWT mint;
+//                       claims.sub = admin_user_id (gerçek UUID).
+//   * env-super       → email+password ADMIN_API_NAME/ADMIN_API_KEY
+//                       eşleşince login JWT mint eder; claims.sub =
+//                       `Uuid::nil()` sentinel + claims.role="super_admin".
+//                       admin_users tablosunda satırı yok; identity
+//                       env'den (`actor_name = ADMIN_API_NAME`).
+//
+// Eski `x-admin-key` header path'i tamamen kaldırıldı (BUG-1 fix:
+// ADMIN_API_KEY tarayıcı localStorage'a yazılıyordu). Süper artık
+// access/refresh token rotasyonu ve aynı 1h TTL'yi kullanır; XSS ile
+// çalınan token en kötü 1 saatte expire olur.
+//
+// Impersonation modeli değişmedi: `X-Impersonate-Brand` header'ı
+// env-super tokenları için okunur; brand_admin tokenlarında ignore.
 //
 // Authorization helpers:
 //   * require_super()                — gate super-only endpoints
@@ -156,38 +162,9 @@ impl FromRequestParts<AppState> for AdminContext {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // ── 1. ADMIN_API_KEY path (env-super) ─────────────────────
-        // Süper kimliği DB'de değil, env değişkenlerinde tutulur.
-        // Impersonation `X-Impersonate-Brand` header'ı ile gelir —
-        // frontend bunu localStorage'dan her request'te tekrar atar.
-        if let Some(key) = parts
-            .headers
-            .get("x-admin-key")
-            .or_else(|| parts.headers.get("x-api-key"))
-            .and_then(|v| v.to_str().ok())
-        {
-            if key == state.config.admin_api_key {
-                let impersonating_brand_id = parts
-                    .headers
-                    .get("x-impersonate-brand")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| Uuid::parse_str(v.trim()).ok());
-
-                return Ok(AdminContext {
-                    admin_user_id: None,
-                    role: AdminRole::Super,
-                    brand_id: None,
-                    impersonating_brand_id,
-                    password_change_required: false,
-                    actor_name: Some(state.config.admin_api_name.clone()),
-                });
-            }
-            // Wrong key shouldn't fall through to JWT path — return
-            // 403 so misconfigured clients get a clear signal.
-            return Err(AppError::Forbidden("invalid admin key".to_string()));
-        }
-
-        // ── 2. JWT Bearer path (brand_admin only) ─────────────────
+        // ── JWT Bearer path (env-super + brand_admin) ─────────────
+        // x-admin-key path'i BUG-1 ile kaldırıldı. Tek kabul edilen
+        // kimlik mekanizması: `Authorization: Bearer <jwt>`.
         let token = parts
             .headers
             .get("authorization")
@@ -206,11 +183,51 @@ impl FromRequestParts<AppState> for AdminContext {
 
         let role = AdminRole::from_str(&claims.role)?;
 
-        // super_admin artık DB'de yok — JWT'sinde super_admin görürsek
-        // bu eski/yanlış mintlenmiş token demek. Reddet.
-        if role != AdminRole::Brand {
+        // ── Env-super JWT: sub=Uuid::nil() sentinel + role=super_admin ──
+        // admin_users tablosunda satır yok; admin_user_id=None kalır
+        // (mevcut handler'lar bu None'ı env-super sinyali olarak kullanıyor).
+        // Impersonation X-Impersonate-Brand header'ından okunur —
+        // /impersonate endpoint'i yeni token mint etmez, frontend
+        // header'ı her request'te tekrar atar.
+        if role == AdminRole::Super {
+            if claims.sub != Uuid::nil() {
+                return Err(AppError::Forbidden(
+                    "super_admin JWT must use nil sub sentinel".to_string(),
+                ));
+            }
+            // Defense in depth: env-super credential'ları runtime'da
+            // boşaltılmışsa (rotation, test env) süresi dolmamış token bile
+            // kabul edilmemeli — kimlik kaynağı yoksa süper yetki yok.
+            if state.config.admin_api_key.is_empty()
+                || state.config.admin_api_name.is_empty()
+            {
+                return Err(AppError::Unauthorized(
+                    "env-super credentials not configured".to_string(),
+                ));
+            }
+            let impersonating_brand_id = parts
+                .headers
+                .get("x-impersonate-brand")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| Uuid::parse_str(v.trim()).ok());
+
+            return Ok(AdminContext {
+                admin_user_id: None,
+                role: AdminRole::Super,
+                brand_id: None,
+                impersonating_brand_id,
+                password_change_required: false,
+                actor_name: Some(state.config.admin_api_name.clone()),
+            });
+        }
+
+        // ── Brand_admin JWT ─────────────────────────────────────────
+        // sub gerçek admin_user_id; nil sentinel buraya düşmemeli (env-super
+        // tokenıyla karışmasın). X-Impersonate-Brand header'ı bilerek
+        // ignore edilir — brand_admin başka brand'i impersonate edemez.
+        if claims.sub == Uuid::nil() {
             return Err(AppError::Forbidden(
-                "super_admin JWT no longer supported; use ADMIN_API_KEY".to_string(),
+                "brand_admin token must not use nil sub sentinel".to_string(),
             ));
         }
         if claims.brand_id.is_none() {

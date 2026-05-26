@@ -3,10 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { useAdminStore } from '@/stores/adminStore'
 import { authApi } from '@/services/api'
 
-// Tek login formu. Backend ADMIN_API_NAME match'i yaparsa super_admin
-// olarak `auth_method: api_key` döner; aksi halde admin_users tablosunda
-// brand_admin olarak doğrular ve JWT döner. Frontend response'taki
-// `auth_method`'a göre store'u kurar.
+// Tek login formu. BUG-1 fix sonrası backend hem brand_admin hem
+// env-super için JWT döner (env-super: sub=Uuid::nil() sentinel).
+// Eski `auth_method === 'api_key'` dallanması ve `setApiKey` çağrısı
+// kaldırıldı — artık tek bir setTokens(access, refresh) yolu var.
 export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -21,15 +21,7 @@ export default function LoginPage() {
 
     try {
       const res = await authApi.login(email.trim(), password)
-
-      if (res.auth_method === 'api_key') {
-        // super_admin: kullanıcının az önce girdiği password aynı zamanda
-        // ADMIN_API_KEY — onu store'a yaz, sonraki request'ler `X-Admin-Key`
-        // header'ı ile gönderilsin.
-        useAdminStore.getState().setApiKey(password)
-      } else {
-        useAdminStore.getState().setTokens(res.access_token, res.refresh_token)
-      }
+      useAdminStore.getState().setTokens(res.access_token, res.refresh_token)
 
       try {
         const me = await authApi.me()
@@ -66,15 +58,15 @@ export default function LoginPage() {
               htmlFor="email"
               className="block text-sm font-medium text-dark-300 mb-1.5"
             >
-              Email
+              Email veya kullanıcı adı
             </label>
             <input
               id="email"
-              type="email"
-              autoComplete="email"
+              type="text"
+              autoComplete="username"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
+              placeholder="you@example.com / admin"
               className="w-full px-3 py-2.5 bg-dark-900 border border-dark-600 rounded-lg text-white placeholder-dark-500 focus:outline-none focus:border-neon-500 transition-colors"
               required
             />

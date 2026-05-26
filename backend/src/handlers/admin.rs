@@ -1,5 +1,4 @@
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -7,20 +6,23 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::handlers::admin_brands::write_audit;
 use crate::middleware::admin_context::AdminContext;
 use crate::AppState;
 
-// ── Admin auth helper ──────────────────────────────────────────
+// ── Auth ───────────────────────────────────────────────────────
+//
+// Bu dosyadaki tüm endpoint'ler super-only platform yönetim
+// endpoint'leri (cities, badges, users, forum moderasyon, vs).
+// AdminContext extractor JWT Bearer'ı doğrular; `require_super()`
+// brand_admin token'larını reddeder. `require_password_changed()`
+// pwc:true token'larını platform mutasyon endpoint'lerinden uzak tutar.
+//
+// Eski `verify_admin(headers, config)` helper'ı (x-admin-key
+// header kontrolü) BUG-1 ile kaldırıldı.
 
-fn verify_admin(headers: &HeaderMap, config: &crate::config::Config) -> Result<(), AppError> {
-    let key = headers
-        .get("x-admin-key")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| AppError::Unauthorized("Missing X-Admin-Key".to_string()))?;
-    if key != config.admin_api_key {
-        return Err(AppError::Forbidden("Invalid admin key".to_string()));
-    }
+fn check_super(ctx: &AdminContext) -> Result<(), AppError> {
+    ctx.require_super()?;
+    ctx.require_password_changed()?;
     Ok(())
 }
 
@@ -101,13 +103,6 @@ pub struct ListBadgesQuery {
 }
 
 #[derive(Deserialize)]
-pub struct SetBadgeSponsorRequest {
-    pub sponsor_name: String,
-    pub sponsor_click_url: String,
-    pub sponsor_logo_url: String,
-}
-
-#[derive(Deserialize)]
 pub struct ListCitiesQuery {
     pub country_code: Option<String>,
 }
@@ -148,7 +143,6 @@ pub fn router() -> Router<AppState> {
         .route("/badges", get(list_badges).post(create_badge))
         .route("/badges/sponsored/stats", get(list_sponsored_badge_stats))
         .route("/badges/{id}", put(update_badge).delete(delete_badge))
-        .route("/badges/{id}/sponsor", put(set_badge_sponsor).delete(clear_badge_sponsor))
         // Notifications
         .route("/notifications", post(send_notification))
         .route("/notifications", get(list_notifications))
@@ -179,9 +173,9 @@ pub fn router() -> Router<AppState> {
 /// GET /api/admin/metrics
 async fn get_metrics(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     let total_users = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM users WHERE is_active = TRUE",
@@ -224,10 +218,10 @@ async fn get_metrics(
 /// GET /api/admin/cities
 async fn list_cities(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Query(params): Query<ListCitiesQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let rows = if let Some(ref country_code) = params.country_code {
@@ -274,10 +268,10 @@ async fn list_cities(
 /// POST /api/admin/cities
 async fn create_city(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Json(body): Json<CreateCityRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     let id = sqlx::query_scalar::<_, i32>(
         "INSERT INTO cities (name, country_code, longitude, latitude, population) VALUES ($1, $2, $3, $4, $5) RETURNING id",
@@ -312,10 +306,10 @@ async fn create_city(
 /// - Valid rows are inserted in a single transaction
 async fn bulk_create_cities(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Json(body): Json<BulkCreateCitiesRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     if body.cities.is_empty() {
         return Err(AppError::BadRequest("cities array is empty".into()));
@@ -417,11 +411,11 @@ async fn bulk_create_cities(
 /// PUT /api/admin/cities/:id
 async fn update_city(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(id): Path<i32>,
     Json(body): Json<UpdateCityRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     // Verify city exists
     let exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM cities WHERE id = $1)")
@@ -472,10 +466,10 @@ async fn update_city(
 /// DELETE /api/admin/cities/:id
 async fn delete_city(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(id): Path<i32>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     // Check if any dates reference this city
     let date_count = sqlx::query_scalar::<_, i64>(
@@ -509,22 +503,42 @@ async fn delete_city(
 /// GET /api/admin/badges
 async fn list_badges(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Query(params): Query<ListBadgesQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
+    // sponsor_click_url brand badge'lerinde ad_campaigns.click_url'den JOIN
+    // ile gelir (migration 054 sonrası). Platform badge'lerinde campaign_id
+    // NULL → JOIN sonucu NULL → is_sponsored=FALSE.
     use sqlx::Row;
     let rows = if let Some(ref gender) = params.gender {
         sqlx::query(
-            "SELECT id, name, description, icon, category, threshold, image_url, gender, is_sponsored, sponsor_name, sponsor_click_url, sponsor_logo_url, sponsor_click_count, criteria FROM badges WHERE gender = $1 OR gender = 'both' ORDER BY id",
+            r#"
+            SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold,
+                   b.image_url, b.gender, b.is_sponsored, b.sponsor_name,
+                   c.click_url AS sponsor_click_url, b.sponsor_logo_url,
+                   b.sponsor_click_count, b.criteria
+            FROM badges b
+            LEFT JOIN ad_campaigns c ON c.id = b.campaign_id
+            WHERE b.gender = $1 OR b.gender = 'both'
+            ORDER BY b.id
+            "#,
         )
         .bind(gender)
         .fetch_all(&state.db)
         .await?
     } else {
         sqlx::query(
-            "SELECT id, name, description, icon, category, threshold, image_url, gender, is_sponsored, sponsor_name, sponsor_click_url, sponsor_logo_url, sponsor_click_count, criteria FROM badges ORDER BY id",
+            r#"
+            SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold,
+                   b.image_url, b.gender, b.is_sponsored, b.sponsor_name,
+                   c.click_url AS sponsor_click_url, b.sponsor_logo_url,
+                   b.sponsor_click_count, b.criteria
+            FROM badges b
+            LEFT JOIN ad_campaigns c ON c.id = b.campaign_id
+            ORDER BY b.id
+            "#,
         )
         .fetch_all(&state.db)
         .await?
@@ -558,10 +572,10 @@ async fn list_badges(
 /// POST /api/admin/badges
 async fn create_badge(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Json(body): Json<CreateBadgeRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     let gender = body.gender.as_deref().unwrap_or("both");
 
@@ -611,11 +625,11 @@ async fn create_badge(
 /// PUT /api/admin/badges/:id
 async fn update_badge(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(id): Path<i32>,
     Json(body): Json<UpdateBadgeRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     let exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM badges WHERE id = $1)")
         .bind(id)
@@ -709,11 +723,11 @@ async fn update_badge(
 /// POST /api/admin/badges/upload
 /// Upload a badge image. Returns the file path.
 async fn upload_badge_image(
-    State(state): State<AppState>,
-    headers: HeaderMap,
+    State(_state): State<AppState>,
+    ctx: AdminContext,
     mut multipart: axum::extract::Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     while let Some(field) = multipart
         .next_field()
@@ -762,154 +776,10 @@ async fn upload_badge_image(
     Err(AppError::BadRequest("No file provided".to_string()))
 }
 
-/// PUT /api/admin/badges/:id/sponsor
-/// Attach sponsor branding to an existing badge. All three sponsor
-/// fields are required when activating; any of them being null
-/// rejects the request (UI also validates).
-async fn set_badge_sponsor(
-    State(state): State<AppState>,
-    ctx: AdminContext,
-    Path(id): Path<i32>,
-    Json(body): Json<SetBadgeSponsorRequest>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    ctx.require_super()?;
-    ctx.require_password_changed()?;
-
-    if body.sponsor_name.trim().is_empty() {
-        return Err(AppError::BadRequest("sponsor_name required".to_string()));
-    }
-    if body.sponsor_click_url.trim().is_empty() {
-        return Err(AppError::BadRequest("sponsor_click_url required".to_string()));
-    }
-    if body.sponsor_logo_url.trim().is_empty() {
-        return Err(AppError::BadRequest("sponsor_logo_url required".to_string()));
-    }
-
-    let before = fetch_badge_sponsor_state(&state.db, id).await?;
-
-    let result = sqlx::query(
-        r#"
-        UPDATE badges SET
-            is_sponsored = TRUE,
-            sponsor_name = $2,
-            sponsor_click_url = $3,
-            sponsor_logo_url = $4
-        WHERE id = $1
-        "#,
-    )
-    .bind(id)
-    .bind(&body.sponsor_name)
-    .bind(&body.sponsor_click_url)
-    .bind(&body.sponsor_logo_url)
-    .execute(&state.db)
-    .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound("Badge not found".to_string()));
-    }
-
-    let after = fetch_badge_sponsor_state(&state.db, id).await?;
-    let brand_id: Option<Uuid> =
-        sqlx::query_scalar("SELECT brand_id FROM badges WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await?
-            .flatten();
-    write_audit(
-        &state.db,
-        &ctx,
-        "badge_sponsor_set",
-        Some("badge"),
-        None,
-        brand_id,
-        Some(json!({ "badge_id": id, "before": before, "after": after })),
-    )
-    .await;
-
-    Ok(Json(json!({ "success": true, "data": after, "error": null })))
-}
-
-/// DELETE /api/admin/badges/:id/sponsor
-/// Clear all sponsor fields and disable the sponsorship flag.
-async fn clear_badge_sponsor(
-    State(state): State<AppState>,
-    ctx: AdminContext,
-    Path(id): Path<i32>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    ctx.require_super()?;
-    ctx.require_password_changed()?;
-
-    let before = fetch_badge_sponsor_state(&state.db, id).await?;
-
-    let prior_brand_id: Option<Uuid> =
-        sqlx::query_scalar("SELECT brand_id FROM badges WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&state.db)
-            .await?
-            .flatten();
-
-    let result = sqlx::query(
-        r#"
-        UPDATE badges SET
-            is_sponsored = FALSE,
-            sponsor_name = NULL,
-            sponsor_click_url = NULL,
-            sponsor_logo_url = NULL,
-            brand_id = NULL
-        WHERE id = $1
-        "#,
-    )
-    .bind(id)
-    .execute(&state.db)
-    .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound("Badge not found".to_string()));
-    }
-
-    write_audit(
-        &state.db,
-        &ctx,
-        "badge_sponsor_clear",
-        Some("badge"),
-        None,
-        prior_brand_id,
-        Some(json!({ "badge_id": id, "before": before })),
-    )
-    .await;
-
-    Ok(Json(json!({
-        "success": true,
-        "data": { "badge_id": id, "is_sponsored": false },
-        "error": null
-    })))
-}
-
-async fn fetch_badge_sponsor_state(
-    db: &sqlx::PgPool,
-    id: i32,
-) -> Result<serde_json::Value, AppError> {
-    use sqlx::Row;
-    let row = sqlx::query(
-        r#"
-        SELECT id, name, is_sponsored, sponsor_name, sponsor_click_url, sponsor_logo_url
-        FROM badges WHERE id = $1
-        "#,
-    )
-    .bind(id)
-    .fetch_optional(db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Badge not found".to_string()))?;
-
-    Ok(json!({
-        "id": row.get::<i32, _>("id"),
-        "name": row.get::<String, _>("name"),
-        "is_sponsored": row.get::<bool, _>("is_sponsored"),
-        "sponsor_name": row.get::<Option<String>, _>("sponsor_name"),
-        "sponsor_click_url": row.get::<Option<String>, _>("sponsor_click_url"),
-        "sponsor_logo_url": row.get::<Option<String>, _>("sponsor_logo_url"),
-    }))
-}
+// Legacy super-admin sponsor retrofit endpoint'leri (set_badge_sponsor,
+// clear_badge_sponsor) ve helper fetch_badge_sponsor_state migration 054
+// ile birlikte kaldırıldı. Yeni model: brand kendi badge_sponsor
+// kampanyasını açar (handlers/admin_ads.rs::create_campaign).
 
 /// GET /api/admin/badges/sponsored/stats
 /// Per-sponsored-badge metrics: total unlock count + total sponsor clicks.
@@ -917,9 +787,9 @@ async fn fetch_badge_sponsor_state(
 /// k-anonimlik koruması yok (zaten kullanıcı kimliği eklenmiyor).
 async fn list_sponsored_badge_stats(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let rows = sqlx::query(
@@ -962,10 +832,10 @@ async fn list_sponsored_badge_stats(
 /// DELETE /api/admin/badges/:id
 async fn delete_badge(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(id): Path<i32>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     // Check if any users have earned this badge
     let earned_count = sqlx::query_scalar::<_, i64>(
@@ -999,10 +869,10 @@ async fn delete_badge(
 /// POST /api/admin/notifications
 async fn send_notification(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Json(body): Json<CreateNotificationRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let notification_type = body.notification_type.as_deref().unwrap_or("system");
@@ -1038,9 +908,9 @@ async fn send_notification(
 /// GET /api/admin/notifications
 async fn list_notifications(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let rows = sqlx::query(
@@ -1081,9 +951,9 @@ async fn list_notifications(
 /// GET /api/admin/users
 async fn list_users(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let rows = sqlx::query(
@@ -1119,10 +989,10 @@ async fn list_users(
 /// GET /api/admin/users/:id
 async fn get_user(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let row = sqlx::query(
@@ -1193,9 +1063,9 @@ async fn get_user(
 /// Create a platform invite link (admin-generated, no user auth needed).
 async fn create_platform_invite(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use crate::services::invite::{self, InviteData, InviteType};
 
@@ -1229,9 +1099,9 @@ async fn create_platform_invite(
 /// GET /api/admin/forum/topics
 async fn list_forum_topics_admin(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let rows = sqlx::query(
@@ -1276,10 +1146,10 @@ async fn list_forum_topics_admin(
 /// DELETE /api/admin/forum/topics/:id (hard delete)
 async fn delete_forum_topic_admin(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     let result = sqlx::query("DELETE FROM forum_topics WHERE id = $1")
         .bind(id)
@@ -1300,10 +1170,10 @@ async fn delete_forum_topic_admin(
 /// PUT /api/admin/forum/topics/:id/pin
 async fn toggle_pin(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let row = sqlx::query(
@@ -1326,10 +1196,10 @@ async fn toggle_pin(
 /// PUT /api/admin/forum/topics/:id/lock
 async fn toggle_lock(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let row = sqlx::query(
@@ -1352,10 +1222,10 @@ async fn toggle_lock(
 /// DELETE /api/admin/forum/comments/:id (hard delete)
 async fn delete_forum_comment_admin(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     let result = sqlx::query("DELETE FROM forum_comments WHERE id = $1")
         .bind(id)
@@ -1378,9 +1248,9 @@ async fn delete_forum_comment_admin(
 /// GET /api/admin/forum/reports
 async fn list_reports(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let rows = sqlx::query(
@@ -1455,11 +1325,11 @@ async fn list_reports(
 /// PUT /api/admin/forum/reports/:id/review
 async fn review_report(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(id): Path<Uuid>,
     Json(body): Json<ReviewReportRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     if !["reviewed", "dismissed"].contains(&body.status.as_str()) {
         return Err(AppError::BadRequest("Status must be 'reviewed' or 'dismissed'".into()));
@@ -1487,11 +1357,11 @@ async fn review_report(
 /// POST /api/admin/forum/users/:id/ban
 async fn ban_user(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(user_id): Path<Uuid>,
     Json(body): Json<BanUserRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     let expires_at = if body.duration_hours == 0 {
         // Permanent: set to year 2099
@@ -1537,10 +1407,10 @@ async fn ban_user(
 /// POST /api/admin/forum/users/:id/unban
 async fn unban_user(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     let result = sqlx::query("UPDATE users SET forum_banned_until = NULL WHERE id = $1")
         .bind(user_id)
@@ -1561,9 +1431,9 @@ async fn unban_user(
 /// GET /api/admin/forum/bans
 async fn list_active_bans(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     use sqlx::Row;
     let rows = sqlx::query(
@@ -1606,10 +1476,10 @@ pub struct RecomputeQuery {
 /// Force a daily aggregate recomputation. Idempotent.
 async fn recompute_analytics(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
     Query(q): Query<RecomputeQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     let date = q
         .date
@@ -1630,9 +1500,9 @@ async fn recompute_analytics(
 /// Force an immediate Redis→Postgres drain of buffered event counters.
 async fn drain_events(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: AdminContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    verify_admin(&headers, &state.config)?;
+    check_super(&ctx)?;
 
     let mut redis = state.redis.clone();
     let written = crate::services::event_tracker::drain(&mut redis, &state.db)

@@ -5,6 +5,7 @@ pub mod crypto;
 pub mod event_tracker;
 pub mod badge_criteria;
 pub mod impression_cap_enforcer;
+pub mod pacing_selector;
 pub mod wallet_reconciler;
 pub mod invite;
 pub mod k_anonymity;

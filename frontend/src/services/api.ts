@@ -1,4 +1,5 @@
 import { useAuthStore } from "@/stores/authStore";
+import { getAdSessionId } from "@/services/adSession";
 import type {
   ApiResponse,
   Badge,
@@ -191,7 +192,9 @@ export const api = {
           min_view_seconds: number;
           gate_token: string;
         }
-    >(`/ads/gate/next?context=${encodeURIComponent(context)}`),
+    >(
+      `/ads/gate/next?context=${encodeURIComponent(context)}&session_id=${encodeURIComponent(getAdSessionId())}`,
+    ),
 
   adGateComplete: (
     gateToken: string,
@@ -520,12 +523,16 @@ export const api = {
   },
 
   // Forum
-  getForumTopics: async (params?: { category?: string; sort?: string; cursor?: string; limit?: number }): Promise<{ topics: ForumTopic[]; next_cursor?: string }> => {
+  getForumTopics: async (params?: { category?: string; sort?: string; window?: string; cursor?: string; limit?: number }): Promise<{ topics: ForumTopic[]; next_cursor?: string }> => {
     const qs = new URLSearchParams();
     if (params?.category) qs.set("category", params.category);
     if (params?.sort) qs.set("sort", params.sort);
+    if (params?.window) qs.set("window", params.window);
     if (params?.cursor) qs.set("cursor", params.cursor);
     if (params?.limit) qs.set("limit", String(params.limit));
+    // Sponsored thread anti-fatigue + impression dedupe için session_id.
+    // adSession modülü her foreground'da fresh UUID üretir.
+    qs.set("session_id", getAdSessionId());
     const qstr = qs.toString();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const raw = await request<any>(`/forum/topics${qstr ? `?${qstr}` : ""}`);
@@ -683,7 +690,9 @@ export const api = {
       click_url: string;
       impression_token: string;
       dwell_ms_for_impression: number;
-    } | null>(`/ads/next?placement=${encodeURIComponent(placement)}`),
+    } | null>(
+      `/ads/next?placement=${encodeURIComponent(placement)}&session_id=${encodeURIComponent(getAdSessionId())}`,
+    ),
 
   recordAdClick: (impressionToken: string) =>
     request<{ redirect_url: string; tracked: boolean }>("/ads/click", {

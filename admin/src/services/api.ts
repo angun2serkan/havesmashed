@@ -4,10 +4,14 @@ const API_BASE = '/api'
 
 // ── Auth-aware fetch wrapper ──────────────────────────────────
 //
-// Auth strategy:
+// Auth strategy (BUG-1 fix sonrası):
 //   1. If `accessToken` is set → `Authorization: Bearer <token>`
-//   2. Else if `apiKey` is set → `X-Admin-Key: <key>` (legacy)
-//   3. Else → no auth headers (login endpoints)
+//      (hem brand_admin hem env-super JWT; env-super sub=Uuid::nil()
+//      sentinel taşır.)
+//   2. Else → no auth headers (login endpoints).
+//
+// Legacy `apiKey`/`X-Admin-Key` yolu tamamen kaldırıldı; super_admin
+// password'u localStorage'da düz metin saklanmıyor.
 //
 // On 401, we try refresh once. If refresh also 401's, we clear auth
 // state and let the auth guard navigate back to /login.
@@ -50,17 +54,16 @@ async function attemptRefresh(): Promise<boolean> {
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const doFetch = async (): Promise<Response> => {
-    const { accessToken, apiKey, impersonatingBrandId } = useAdminStore.getState()
+    const { accessToken, impersonatingBrandId } = useAdminStore.getState()
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(options.headers as Record<string, string>),
     }
     if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`
-    else if (apiKey) headers['X-Admin-Key'] = apiKey
     // Env-super impersonation: backend her request'te header'dan okur,
-    // state tutmaz. brand_admin JWT'sinde impersonation yok — header
-    // gelse bile context'i etkilemez.
-    if (apiKey && impersonatingBrandId)
+    // state tutmaz. brand_admin JWT'sinde impersonation yok — backend
+    // sub != Uuid::nil() ise header'ı bilerek ignore eder.
+    if (impersonatingBrandId)
       headers['X-Impersonate-Brand'] = impersonatingBrandId
     return fetch(`${API_BASE}${path}`, { ...options, headers })
   }
@@ -82,29 +85,22 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 // ── Auth endpoints ────────────────────────────────────────────
 
-export type LoginResponse =
-  | {
-      auth_method: 'api_key'
-      must_change_password: false
-      user: {
-        id: null
-        display_name: string
-        role: 'super_admin'
-        brand_id: null
-      }
-    }
-  | {
-      auth_method: 'jwt'
-      access_token: string
-      refresh_token: string
-      must_change_password: boolean
-      user: {
-        id: string
-        display_name: string
-        role: 'brand_admin'
-        brand_id: string
-      }
-    }
+// BUG-1 fix: hem brand_admin hem env-super JWT döner. Env-super'de
+// `user.id` null kalır (admin_users tablosunda satır yok); frontend
+// bu null'ı "env-super" ayırt edici olarak kullanır. `must_change_password`
+// env-super için her zaman false (DB satırı olmadığı için pwc flag'i yok).
+export type LoginResponse = {
+  auth_method: 'jwt'
+  access_token: string
+  refresh_token: string
+  must_change_password: boolean
+  user: {
+    id: string | null
+    display_name: string
+    role: 'super_admin' | 'brand_admin'
+    brand_id: string | null
+  }
+}
 
 export const authApi = {
   login: (email: string, password: string) =>
@@ -137,7 +133,7 @@ export const authApi = {
       must_change_password: boolean
       password_changed_at: string | null
       impersonating_brand: { id: string; slug: string; display_name: string } | null
-      auth_method: 'jwt' | 'api_key'
+      auth_method: 'jwt'
     }>('/admin/me'),
 
   impersonateStart: (brand_id: string) =>
@@ -390,12 +386,11 @@ export const adminApi = {
   deleteBadge: (id: number) =>
     request<null>(`/admin/badges/${id}`, { method: 'DELETE' }),
   uploadBadgeImage: async (file: File): Promise<{ url: string }> => {
-    const { accessToken, apiKey } = useAdminStore.getState()
+    const { accessToken } = useAdminStore.getState()
     const formData = new FormData();
     formData.append('file', file);
     const headers: Record<string, string> = {}
     if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`
-    else if (apiKey) headers['X-Admin-Key'] = apiKey
 
     const res = await fetch(`${API_BASE}/admin/badges/upload`, {
       method: 'POST',
@@ -406,16 +401,9 @@ export const adminApi = {
     if (!json.success) throw new Error(json.error ?? 'Upload failed');
     return json.data as { url: string };
   },
-  setBadgeSponsor: (id: number, data: { sponsor_name: string; sponsor_click_url: string; sponsor_logo_url: string }) =>
-    request<{ id: number; name: string; is_sponsored: boolean; sponsor_name: string; sponsor_click_url: string; sponsor_logo_url: string }>(
-      `/admin/badges/${id}/sponsor`,
-      { method: 'PUT', body: JSON.stringify(data) },
-    ),
-  clearBadgeSponsor: (id: number) =>
-    request<{ badge_id: number; is_sponsored: false }>(
-      `/admin/badges/${id}/sponsor`,
-      { method: 'DELETE' },
-    ),
+  // Legacy super-admin sponsor retrofit endpoint'leri (setBadgeSponsor /
+  // clearBadgeSponsor) migration 054 ile birlikte kaldırıldı. Brand artık
+  // kendi badge_sponsor kampanyasını açıyor (createCampaign).
   getSponsoredBadgeStats: () =>
     request<Array<{
       badge_id: number
@@ -560,12 +548,11 @@ export const adminApi = {
     ),
 
   uploadAdCreative: async (file: File): Promise<{ url: string }> => {
-    const { accessToken, apiKey } = useAdminStore.getState()
+    const { accessToken } = useAdminStore.getState()
     const formData = new FormData()
     formData.append('file', file)
     const headers: Record<string, string> = {}
     if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`
-    else if (apiKey) headers['X-Admin-Key'] = apiKey
     const res = await fetch('/api/admin/ads/upload-creative', {
       method: 'POST',
       headers,
@@ -928,7 +915,7 @@ export type CampaignCreateInput = {
 
 export type CampaignUpdateInput = Partial<{
   creative: CampaignCreative
-  click_url: string
+  // click_url is intentionally not editable — locked at creation.
   target_segment: TargetSegment | null
   starts_at: string
   ends_at: string

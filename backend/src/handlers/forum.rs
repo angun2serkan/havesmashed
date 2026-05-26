@@ -1,6 +1,8 @@
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use chrono::Utc;
+use redis::AsyncCommands;
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::Row;
@@ -8,18 +10,34 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
+use crate::services::pacing_selector::{self, PacingCandidate};
 use crate::AppState;
 
 const VALID_CATEGORIES: &[&str] = &["general", "tips", "stories", "questions", "off-topic"];
+
+/// forum_thread placement'ında aynı anda en fazla bu kadar sponsorlu
+/// thread pinned gösterilir. Aktif kampanya sayısı bu sayıyı aşarsa
+/// rotation (pacing-aware sampling without replacement) devreye girer.
+const FORUM_MAX_PINNED_SPONSORED: usize = 4;
+
+/// forum_thread sponsorlu seen-set TTL'si — feed_native ile aynı.
+const FORUM_SEEN_TTL_SECS: i64 = 86_400;
 
 // ── Request types ──────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct ListTopicsQuery {
     pub category: Option<String>,
+    /// "hot" (default, time-decayed engagement), "new" (chronological),
+    /// "top" (highest like count within window).
     pub sort: Option<String>,
+    /// Sadece sort=top için anlamlı: "week" (default) | "month" | "all".
+    pub window: Option<String>,
     pub cursor: Option<Uuid>,
     pub limit: Option<i64>,
+    /// Frontend-generated per-foreground session UUID. Sponsorlu thread
+    /// anti-fatigue ve impression dedupe için kullanılır.
+    pub session_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +95,11 @@ pub fn router() -> Router<AppState> {
 // ── Handlers ───────────────────────────────────────────────────
 
 /// GET /api/forum/topics
+///
+/// İki kaynak: sponsorlu thread'ler (pacing-aware top-N, anti-fatigue,
+/// sadece ilk sayfada) ve organik thread'ler (time-decayed hot / new /
+/// top-window). Cursor pagination organik akışa uygulanır; sponsorlu
+/// blok ilk sayfada üstte sabit slot olarak gösterilir.
 async fn list_topics(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -84,118 +107,45 @@ async fn list_topics(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(50);
     let sort = params.sort.as_deref().unwrap_or("hot");
-
-    let order_clause = match sort {
-        "new" => "t.created_at DESC",
-        "top" => "t.like_count DESC, t.created_at DESC",
-        _ => "(t.like_count + t.comment_count) DESC, t.created_at DESC", // hot
-    };
-
-    // Build dynamic query.
-    // user_id NULL ise topic sponsorlu (sponsor_campaign_id set).
-    // LEFT JOIN'ler hem author bilgisini hem brand_name'i opsiyonel olarak çeker.
-    let mut sql = String::from(
-        r#"
-        SELECT t.id, t.title, t.body, t.category, t.is_anonymous, t.is_pinned,
-               t.is_locked, t.like_count, t.comment_count, t.created_at,
-               t.image_url, t.sponsor_campaign_id,
-               u.nickname AS author_nickname,
-               ac.brand_name AS sponsor_brand_name,
-               CASE WHEN fl.user_id IS NOT NULL THEN TRUE ELSE FALSE END AS liked,
-               (SELECT b.icon FROM user_badges ub JOIN badges b ON b.id = ub.badge_id WHERE ub.user_id = t.user_id ORDER BY b.id DESC LIMIT 1) AS top_badge_icon
-        FROM forum_topics t
-        LEFT JOIN users u ON u.id = t.user_id
-        LEFT JOIN ad_campaigns ac ON ac.id = t.sponsor_campaign_id
-        LEFT JOIN forum_likes fl ON fl.target_type = 'topic' AND fl.target_id = t.id AND fl.user_id = $1
-        WHERE t.deleted_at IS NULL
-        "#,
-    );
-
-    let mut param_idx = 2;
-
-    if let Some(ref category) = params.category {
-        if !VALID_CATEGORIES.contains(&category.as_str()) {
+    if !matches!(sort, "hot" | "new" | "top") {
+        return Err(AppError::BadRequest("Invalid sort".to_string()));
+    }
+    let window = params.window.as_deref().unwrap_or("week");
+    if !matches!(window, "week" | "month" | "all") {
+        return Err(AppError::BadRequest("Invalid window".to_string()));
+    }
+    if let Some(ref cat) = params.category {
+        if !VALID_CATEGORIES.contains(&cat.as_str()) {
             return Err(AppError::BadRequest("Invalid category".to_string()));
         }
-        sql.push_str(&format!(" AND t.category = ${param_idx}"));
-        param_idx += 1;
     }
+    let is_first_page = params.cursor.is_none();
 
-    if params.cursor.is_some() {
-        sql.push_str(&format!(" AND t.id < ${param_idx}"));
-        param_idx += 1;
-    }
-
-    sql.push_str(&format!(
-        " ORDER BY t.is_pinned DESC, {order_clause} LIMIT ${param_idx}"
-    ));
-
-    // We need to bind dynamically based on which params are present
-    let mut query = sqlx::query(&sql).bind(auth.user_id);
-
-    if let Some(ref category) = params.category {
-        query = query.bind(category);
-    }
-
-    if let Some(cursor) = params.cursor {
-        query = query.bind(cursor);
-    }
-
-    query = query.bind(limit + 1);
-
-    let rows = query.fetch_all(&state.db).await?;
-
-    let has_more = rows.len() as i64 > limit;
-    let taken_rows: Vec<_> = rows.into_iter().take(limit as usize).collect();
-
-    let topics: Vec<serde_json::Value> = taken_rows
-        .iter()
-        .map(|r| {
-            let body_full: String = r.get("body");
-            let body_preview = if body_full.len() > 200 {
-                format!("{}...", &body_full[..body_full.floor_char_boundary(200)])
-            } else {
-                body_full
-            };
-
-            let is_anonymous: bool = r.get("is_anonymous");
-            let author_nickname: Option<String> = if is_anonymous {
-                None
-            } else {
-                r.get("author_nickname")
-            };
-            let top_badge_icon: Option<String> = if is_anonymous {
-                None
-            } else {
-                r.get("top_badge_icon")
-            };
-
-            json!({
-                "id": r.get::<Uuid, _>("id"),
-                "title": r.get::<String, _>("title"),
-                "body_preview": body_preview,
-                "category": r.get::<String, _>("category"),
-                "is_anonymous": is_anonymous,
-                "is_pinned": r.get::<bool, _>("is_pinned"),
-                "is_locked": r.get::<bool, _>("is_locked"),
-                "like_count": r.get::<i32, _>("like_count"),
-                "comment_count": r.get::<i32, _>("comment_count"),
-                "created_at": r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
-                "author_nickname": author_nickname,
-                "top_badge_icon": top_badge_icon,
-                "liked": r.get::<bool, _>("liked"),
-                "image_url": r.get::<Option<String>, _>("image_url"),
-                "sponsor_campaign_id": r.get::<Option<Uuid>, _>("sponsor_campaign_id"),
-                "sponsor_brand_name": r.get::<Option<String>, _>("sponsor_brand_name"),
-            })
-        })
-        .collect();
-
-    let next_cursor = if has_more {
-        taken_rows.last().map(|r| r.get::<Uuid, _>("id"))
+    let sponsored_topics = if is_first_page {
+        fetch_sponsored_topics(
+            &state,
+            auth.user_id,
+            params.session_id.as_deref(),
+            params.category.as_deref(),
+        )
+        .await?
     } else {
-        None
+        Vec::new()
     };
+
+    let (organic_topics, next_cursor) = fetch_organic_topics(
+        &state,
+        auth.user_id,
+        params.category.as_deref(),
+        sort,
+        window,
+        params.cursor,
+        limit,
+    )
+    .await?;
+
+    let mut topics = sponsored_topics;
+    topics.extend(organic_topics);
 
     Ok(Json(json!({
         "success": true,
@@ -205,6 +155,294 @@ async fn list_topics(
         },
         "error": null
     })))
+}
+
+// ── Sponsored thread selection (pacing-aware) ──────────────────
+
+/// Eligible sponsorlu thread havuzundan pacing-aware top-N kampanya seçer.
+/// Anti-fatigue: session'da görülen kampanyalar filtrelenir, hepsi
+/// tükenirse seen-set sıfırlanır (kullanıcı devre başa). Seçilen her
+/// kampanya için impression ad_metrics'e yazılır — session başına
+/// kampanya başına en fazla bir kez.
+async fn fetch_sponsored_topics(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Option<&str>,
+    category: Option<&str>,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let mut sql = String::from(
+        r#"
+        SELECT t.id, t.title, t.body, t.category, t.is_anonymous, t.is_pinned,
+               t.is_locked, t.like_count, t.comment_count, t.created_at,
+               t.image_url, t.sponsor_campaign_id,
+               ac.brand_name AS sponsor_brand_name,
+               ac.brand_id, ac.weight,
+               ac.target_impressions, ac.starts_at AS campaign_starts_at,
+               ac.ends_at AS campaign_ends_at,
+               COALESCE(m.imp, 0)::bigint AS current_impressions,
+               CASE WHEN fl.user_id IS NOT NULL THEN TRUE ELSE FALSE END AS liked
+        FROM forum_topics t
+        JOIN ad_campaigns ac ON ac.id = t.sponsor_campaign_id
+        LEFT JOIN (
+            SELECT campaign_id, SUM(impressions) AS imp
+            FROM ad_metrics
+            GROUP BY campaign_id
+        ) m ON m.campaign_id = ac.id
+        LEFT JOIN forum_likes fl
+            ON fl.target_type = 'topic' AND fl.target_id = t.id AND fl.user_id = $1
+        WHERE t.deleted_at IS NULL
+          AND t.sponsor_campaign_id IS NOT NULL
+          AND ac.status = 'active'
+          AND ac.deleted_at IS NULL
+          AND ac.is_dry_run = FALSE
+          AND NOW() BETWEEN ac.starts_at AND ac.ends_at
+          AND ac.target_impressions IS NOT NULL
+          AND COALESCE(m.imp, 0) < ac.target_impressions
+        "#,
+    );
+    if category.is_some() {
+        sql.push_str(" AND t.category = $2");
+    }
+
+    let mut q = sqlx::query(&sql).bind(user_id);
+    if let Some(cat) = category {
+        q = q.bind(cat);
+    }
+    let rows = q.fetch_all(&state.db).await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Anti-fatigue filter (session-scoped). Boş kalırsa seen-set'i sıfırla.
+    let mut redis = state.redis.clone();
+    let seen_key = session_id.map(|sid| format!("forum_seen:{}:{}", user_id, sid));
+    let seen_ids: std::collections::HashSet<Uuid> = if let Some(ref key) = seen_key {
+        let raw: Vec<String> = redis.smembers(key).await.unwrap_or_default();
+        raw.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    let filtered_indices: Vec<usize> = if seen_ids.is_empty() {
+        (0..rows.len()).collect()
+    } else {
+        let unseen: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                let cid: Option<Uuid> = r.get("sponsor_campaign_id");
+                cid.map(|id| !seen_ids.contains(&id)).unwrap_or(true)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if unseen.is_empty() {
+            // Reset: kullanıcı tüm eligible sponsorluları gördü, başa al.
+            if let Some(ref key) = seen_key {
+                let _: Result<i64, _> = redis.del(key).await;
+            }
+            (0..rows.len()).collect()
+        } else {
+            unseen
+        }
+    };
+
+    let candidates: Vec<PacingCandidate> = filtered_indices
+        .iter()
+        .map(|&i| {
+            let r = &rows[i];
+            PacingCandidate {
+                id: r.get::<Uuid, _>("sponsor_campaign_id"),
+                brand_id: r.get::<Uuid, _>("brand_id"),
+                weight: r.get::<i32, _>("weight"),
+                target_impressions: r.get::<i32, _>("target_impressions"),
+                starts_at: r.get::<chrono::DateTime<Utc>, _>("campaign_starts_at"),
+                ends_at: r.get::<chrono::DateTime<Utc>, _>("campaign_ends_at"),
+                current_impressions: r.get::<i64, _>("current_impressions"),
+            }
+        })
+        .collect();
+
+    let chosen_campaign_ids = pacing_selector::pick_top_n(
+        &candidates,
+        Utc::now(),
+        FORUM_MAX_PINNED_SPONSORED,
+        pacing_selector::URGENCY_CAP_DEFAULT,
+    );
+    if chosen_campaign_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Yeni gösterilenleri impression ve seen-set'e işle. Aynı session'da
+    // önceden işlenmişler buraya hiç gelmiyor (filter zaten süzdü), bu
+    // yüzden ek dedupe kontrolü gerekmiyor.
+    for cid in &chosen_campaign_ids {
+        record_sponsor_thread_impression(&state.db, *cid).await;
+    }
+    if let Some(ref key) = seen_key {
+        for cid in &chosen_campaign_ids {
+            let _: Result<i64, _> = redis.sadd(key, cid.to_string()).await;
+        }
+        let _: Result<bool, _> = redis.expire(key, FORUM_SEEN_TTL_SECS).await;
+    }
+
+    // Sıralamayı kazananlara göre kur ve JSON'a serialize et.
+    let mut topics = Vec::with_capacity(chosen_campaign_ids.len());
+    for cid in chosen_campaign_ids {
+        if let Some(r) = rows.iter().find(|r| {
+            r.get::<Option<Uuid>, _>("sponsor_campaign_id") == Some(cid)
+        }) {
+            topics.push(row_to_topic_json(r, true));
+        }
+    }
+    Ok(topics)
+}
+
+async fn record_sponsor_thread_impression(db: &sqlx::PgPool, campaign_id: Uuid) {
+    let _ = sqlx::query(
+        r#"
+        INSERT INTO ad_metrics (campaign_id, date, impressions, clicks, extra)
+        VALUES ($1, CURRENT_DATE, 1, 0, '{}'::jsonb)
+        ON CONFLICT (campaign_id, date) DO UPDATE
+            SET impressions = ad_metrics.impressions + 1
+        "#,
+    )
+    .bind(campaign_id)
+    .execute(db)
+    .await;
+    let _ = sqlx::query(
+        r#"
+        INSERT INTO ad_placement_metrics (placement_key, date, impressions, clicks, extra)
+        VALUES ('forum_thread', CURRENT_DATE, 1, 0, '{}'::jsonb)
+        ON CONFLICT (placement_key, date) DO UPDATE
+            SET impressions = ad_placement_metrics.impressions + 1
+        "#,
+    )
+    .execute(db)
+    .await;
+}
+
+// ── Organic thread fetch ────────────────────────────────────────
+
+/// Time-decayed hot / new / windowed-top sıralamayla organik thread'leri
+/// çeker. Cursor pagination: `t.id < cursor` (UUID v7 sıralı → kronolojik
+/// pencere). Hot/top için kursorlu pagination ranking değişimine duyarlı
+/// değildir; "next page" sadece daha eski id'lere gider.
+async fn fetch_organic_topics(
+    state: &AppState,
+    user_id: Uuid,
+    category: Option<&str>,
+    sort: &str,
+    window: &str,
+    cursor: Option<Uuid>,
+    limit: i64,
+) -> Result<(Vec<serde_json::Value>, Option<Uuid>), AppError> {
+    // sort=top için zaman penceresi (week=7d / month=30d / all). hot ve
+    // new'de window ignored.
+    let window_filter = match (sort, window) {
+        ("top", "week") => " AND t.created_at >= NOW() - INTERVAL '7 days'",
+        ("top", "month") => " AND t.created_at >= NOW() - INTERVAL '30 days'",
+        _ => "",
+    };
+
+    // hot: Reddit-style time decay — 12 saat yarı-ömür.
+    //   ln(max(likes+comments, 1)) - hours_old / 12
+    let order_clause = match sort {
+        "new" => "t.created_at DESC, t.id DESC",
+        "top" => "t.like_count DESC, t.id DESC",
+        _ => "(LN(GREATEST(t.like_count + t.comment_count, 1)) \
+               - EXTRACT(EPOCH FROM (NOW() - t.created_at)) / 43200.0) DESC, t.id DESC",
+    };
+
+    let mut sql = String::from(
+        r#"
+        SELECT t.id, t.title, t.body, t.category, t.is_anonymous, t.is_pinned,
+               t.is_locked, t.like_count, t.comment_count, t.created_at,
+               t.image_url, t.sponsor_campaign_id,
+               u.nickname AS author_nickname,
+               NULL::text AS sponsor_brand_name,
+               CASE WHEN fl.user_id IS NOT NULL THEN TRUE ELSE FALSE END AS liked,
+               (SELECT b.icon FROM user_badges ub JOIN badges b ON b.id = ub.badge_id WHERE ub.user_id = t.user_id ORDER BY b.id DESC LIMIT 1) AS top_badge_icon
+        FROM forum_topics t
+        LEFT JOIN users u ON u.id = t.user_id
+        LEFT JOIN forum_likes fl ON fl.target_type = 'topic' AND fl.target_id = t.id AND fl.user_id = $1
+        WHERE t.deleted_at IS NULL
+          AND t.sponsor_campaign_id IS NULL
+        "#,
+    );
+    sql.push_str(window_filter);
+
+    let mut param_idx = 2;
+    if category.is_some() {
+        sql.push_str(&format!(" AND t.category = ${param_idx}"));
+        param_idx += 1;
+    }
+    if cursor.is_some() {
+        sql.push_str(&format!(" AND t.id < ${param_idx}"));
+        param_idx += 1;
+    }
+    sql.push_str(&format!(" ORDER BY {order_clause} LIMIT ${param_idx}"));
+
+    let mut q = sqlx::query(&sql).bind(user_id);
+    if let Some(cat) = category {
+        q = q.bind(cat);
+    }
+    if let Some(cur) = cursor {
+        q = q.bind(cur);
+    }
+    q = q.bind(limit + 1);
+
+    let rows = q.fetch_all(&state.db).await?;
+    let has_more = rows.len() as i64 > limit;
+    let taken: Vec<_> = rows.into_iter().take(limit as usize).collect();
+    let next_cursor = if has_more {
+        taken.last().map(|r| r.get::<Uuid, _>("id"))
+    } else {
+        None
+    };
+    let topics = taken.iter().map(|r| row_to_topic_json(r, false)).collect();
+    Ok((topics, next_cursor))
+}
+
+// ── Row → JSON ──────────────────────────────────────────────────
+
+fn row_to_topic_json(r: &sqlx::postgres::PgRow, is_sponsored: bool) -> serde_json::Value {
+    let body_full: String = r.get("body");
+    let body_preview = if body_full.len() > 200 {
+        format!("{}...", &body_full[..body_full.floor_char_boundary(200)])
+    } else {
+        body_full
+    };
+    let is_anonymous: bool = r.get("is_anonymous");
+    // Sponsorlu thread'lerde author_nickname / top_badge_icon yok (user_id NULL).
+    let author_nickname: Option<String> = if is_anonymous || is_sponsored {
+        None
+    } else {
+        r.try_get("author_nickname").ok()
+    };
+    let top_badge_icon: Option<String> = if is_anonymous || is_sponsored {
+        None
+    } else {
+        r.try_get("top_badge_icon").ok()
+    };
+
+    json!({
+        "id": r.get::<Uuid, _>("id"),
+        "title": r.get::<String, _>("title"),
+        "body_preview": body_preview,
+        "category": r.get::<String, _>("category"),
+        "is_anonymous": is_anonymous,
+        "is_pinned": r.get::<bool, _>("is_pinned"),
+        "is_locked": r.get::<bool, _>("is_locked"),
+        "like_count": r.get::<i32, _>("like_count"),
+        "comment_count": r.get::<i32, _>("comment_count"),
+        "created_at": r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+        "author_nickname": author_nickname,
+        "top_badge_icon": top_badge_icon,
+        "liked": r.get::<bool, _>("liked"),
+        "image_url": r.get::<Option<String>, _>("image_url"),
+        "sponsor_campaign_id": r.get::<Option<Uuid>, _>("sponsor_campaign_id"),
+        "sponsor_brand_name": r.try_get::<Option<String>, _>("sponsor_brand_name").ok().flatten(),
+    })
 }
 
 /// POST /api/forum/topics

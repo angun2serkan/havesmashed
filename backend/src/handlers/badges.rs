@@ -30,24 +30,24 @@ async fn get_public_badge(
     Path(id): Path<i32>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     use sqlx::Row;
+    // sponsor_click_url, brand badge'leri için ad_campaigns.click_url'den
+    // gelir (migration 054 sonrası tek source of truth). Platform
+    // badge'lerinde campaign_id NULL olduğu için JOIN sonucu NULL döner —
+    // is_sponsored=FALSE platform badge'lerinde zaten kullanılmaz.
     let row = sqlx::query(
         r#"
         SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold,
                b.gender, b.tier, b.image_url,
-               b.is_sponsored, b.sponsor_name, b.sponsor_click_url,
+               b.is_sponsored, b.sponsor_name, c.click_url AS sponsor_click_url,
                b.brand_id, br.display_name AS brand_display_name
         FROM badges b
         LEFT JOIN brands br ON br.id = b.brand_id
+        LEFT JOIN ad_campaigns c ON c.id = b.campaign_id
         WHERE b.id = $1
           AND b.status = 'active'
           AND (
             b.campaign_id IS NULL
-            OR EXISTS (
-              SELECT 1 FROM ad_campaigns c
-              WHERE c.id = b.campaign_id
-                AND c.deleted_at IS NULL
-                AND NOW() BETWEEN c.starts_at AND c.ends_at
-            )
+            OR (c.deleted_at IS NULL AND NOW() BETWEEN c.starts_at AND c.ends_at)
           )
         "#,
     )
@@ -209,17 +209,13 @@ async fn get_all_badges(
     let rows = sqlx::query(
         r#"
         SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, b.gender, b.tier,
-               b.is_sponsored, b.sponsor_name, b.sponsor_click_url, b.sponsor_logo_url
+               b.is_sponsored, b.sponsor_name, c.click_url AS sponsor_click_url, b.sponsor_logo_url
         FROM badges b
+        LEFT JOIN ad_campaigns c ON c.id = b.campaign_id
         WHERE b.status = 'active'
           AND (
             b.campaign_id IS NULL
-            OR EXISTS (
-              SELECT 1 FROM ad_campaigns c
-              WHERE c.id = b.campaign_id
-                AND c.deleted_at IS NULL
-                AND NOW() BETWEEN c.starts_at AND c.ends_at
-            )
+            OR (c.deleted_at IS NULL AND NOW() BETWEEN c.starts_at AND c.ends_at)
           )
         ORDER BY b.id
         "#
@@ -280,10 +276,11 @@ async fn get_friend_badges(
     let rows = sqlx::query(
         r#"
         SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, b.gender, b.tier,
-               b.is_sponsored, b.sponsor_name, b.sponsor_click_url, b.sponsor_logo_url,
+               b.is_sponsored, b.sponsor_name, c.click_url AS sponsor_click_url, b.sponsor_logo_url,
                ub.earned_at
         FROM badges b
         JOIN user_badges ub ON ub.badge_id = b.id
+        LEFT JOIN ad_campaigns c ON c.id = b.campaign_id
         WHERE ub.user_id = $1
         ORDER BY ub.earned_at DESC
         "#
@@ -324,21 +321,17 @@ async fn fetch_user_badges(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<serde
     let rows = sqlx::query(
         r#"
         SELECT b.id, b.name, b.description, b.icon, b.category, b.threshold, b.gender, b.tier,
-               b.is_sponsored, b.sponsor_name, b.sponsor_click_url, b.sponsor_logo_url,
+               b.is_sponsored, b.sponsor_name, c.click_url AS sponsor_click_url, b.sponsor_logo_url,
                ub.earned_at
         FROM badges b
         LEFT JOIN user_badges ub ON ub.badge_id = b.id AND ub.user_id = $1
+        LEFT JOIN ad_campaigns c ON c.id = b.campaign_id
         WHERE ub.earned_at IS NOT NULL
            OR (
              b.status = 'active'
              AND (
                b.campaign_id IS NULL
-               OR EXISTS (
-                 SELECT 1 FROM ad_campaigns c
-                 WHERE c.id = b.campaign_id
-                   AND c.deleted_at IS NULL
-                   AND NOW() BETWEEN c.starts_at AND c.ends_at
-               )
+               OR (c.deleted_at IS NULL AND NOW() BETWEEN c.starts_at AND c.ends_at)
              )
            )
         ORDER BY b.id

@@ -13,16 +13,17 @@
 use axum::extract::{Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rand::Rng;
 use redis::AsyncCommands;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
+use crate::services::pacing_selector::{self, PacingCandidate};
 use crate::services::{ad_targeting, ad_token};
 use crate::AppState;
 
@@ -42,7 +43,12 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize)]
 struct NextQuery {
     placement: String,
+    /// Frontend-generated session UUID for anti-fatigue tracking.
+    /// Reset on page reload / app foreground. Only used by feed_native.
+    session_id: Option<String>,
 }
+
+const FEED_NATIVE_PLACEMENT_KEY: &str = "feed_native";
 
 async fn next_ad(
     State(state): State<AppState>,
@@ -71,6 +77,12 @@ async fn next_ad(
     let mut redis = state.redis.clone();
     if !cap_passes(&mut redis, auth.user_id, &q.placement, &rules).await? {
         return Ok(empty_response());
+    }
+
+    // 3. Feed Native: pacing-aware selection with anti-fatigue.
+    //    Other placements still use legacy weighted random for now.
+    if q.placement == FEED_NATIVE_PLACEMENT_KEY {
+        return next_ad_feed_native(state, auth, q, rules, redis).await;
     }
 
     // 3. Eligible candidates for this placement.
@@ -135,6 +147,210 @@ async fn next_ad(
         },
         "error": null
     })))
+}
+
+// ════════════════════════════════════════════════════════════════
+// Feed Native — pacing-aware selection
+// ════════════════════════════════════════════════════════════════
+//
+// Score formula:
+//   score = (target_impressions - current_impressions)
+//           × urgency_multiplier
+//           × internal_share
+// where
+//   urgency_multiplier = min(total_duration / remaining_duration, 5.0)
+//   internal_share     = weight / Σ(weight of same brand's active campaigns)
+//
+// Pipeline:
+//   1. Load eligible pool (Redis cache, 1h TTL) — fresh sweep includes
+//      over-delivered exclusion via SQL filter.
+//   2. Apply user targeting.
+//   3. Apply anti-fatigue: filter out campaigns this user has already
+//      seen in the current session; reset the seen set if all eligible
+//      were already shown.
+//   4. Compute scores, linear-normalize to probabilities with 1% floor.
+//   5. Weighted random pick.
+//   6. Record impression + add to seen set.
+
+const PLACEMENT_POOL_TTL_SECS: i64 = 3600;
+const PLACEMENT_SEEN_TTL_SECS: i64 = 86_400;
+
+#[derive(Clone, Serialize, Deserialize, sqlx::FromRow)]
+struct PlacementCandidate {
+    id: Uuid,
+    creative: Value,
+    click_url: String,
+    target_segment: Option<Value>,
+    weight: i32,
+    brand_id: Uuid,
+    target_impressions: i32,
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+    current_impressions: i64,
+}
+
+impl PlacementCandidate {
+    fn to_pacing(&self) -> PacingCandidate {
+        PacingCandidate {
+            id: self.id,
+            brand_id: self.brand_id,
+            weight: self.weight,
+            target_impressions: self.target_impressions,
+            starts_at: self.starts_at,
+            ends_at: self.ends_at,
+            current_impressions: self.current_impressions,
+        }
+    }
+}
+
+fn placement_pool_cache_key(placement: &str) -> String {
+    format!("placement_pool:{}", placement)
+}
+
+async fn next_ad_feed_native(
+    state: AppState,
+    auth: AuthUser,
+    q: NextQuery,
+    rules: Value,
+    mut redis: redis::aio::ConnectionManager,
+) -> Result<Json<Value>, AppError> {
+    let pool = load_placement_pool(&state.db, &mut redis, FEED_NATIVE_PLACEMENT_KEY).await?;
+    if pool.is_empty() {
+        return Ok(empty_response());
+    }
+
+    let profile = ad_targeting::load_profile(&state.db, &mut redis, auth.user_id).await?;
+    let targeted: Vec<PlacementCandidate> = pool
+        .into_iter()
+        .filter(|c| ad_targeting::matches_segment(&profile, c.target_segment.as_ref()))
+        .collect();
+    if targeted.is_empty() {
+        return Ok(empty_response());
+    }
+
+    // Anti-fatigue: filter campaigns already seen in this session.
+    // If session_id missing, skip anti-fatigue (legacy clients).
+    let (eligible, seen_key) = if let Some(sid) = q.session_id.as_deref() {
+        let key = format!("feed_seen:{}:{}", auth.user_id, sid);
+        let seen: Vec<String> = redis.smembers(&key).await.unwrap_or_default();
+        let seen_ids: std::collections::HashSet<Uuid> =
+            seen.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect();
+        let filtered: Vec<PlacementCandidate> = targeted
+            .iter()
+            .filter(|c| !seen_ids.contains(&c.id))
+            .cloned()
+            .collect();
+        if filtered.is_empty() {
+            // Reset: kullanıcı tüm reklamları gördü, devre başa.
+            let _: Result<i64, _> = redis.del(&key).await;
+            (targeted, Some(key))
+        } else {
+            (filtered, Some(key))
+        }
+    } else {
+        (targeted, None)
+    };
+
+    let pacing_pool: Vec<PacingCandidate> = eligible.iter().map(|c| c.to_pacing()).collect();
+    let Some(campaign_id) = pacing_selector::pick_one(
+        &pacing_pool,
+        Utc::now(),
+        pacing_selector::URGENCY_CAP_DEFAULT,
+    ) else {
+        return Ok(empty_response());
+    };
+    let chosen = eligible
+        .iter()
+        .find(|c| c.id == campaign_id)
+        .ok_or_else(|| AppError::Internal("picked campaign missing from pool".to_string()))?;
+
+    record_impression(&state.db, campaign_id, &q.placement).await?;
+    cap_record_impression(&mut redis, auth.user_id, &q.placement).await;
+
+    // Add to seen set with rolling TTL.
+    if let Some(key) = seen_key {
+        let _: Result<i64, _> = redis.sadd(&key, campaign_id.to_string()).await;
+        let _: Result<bool, _> = redis.expire(&key, PLACEMENT_SEEN_TTL_SECS).await;
+    }
+
+    let token = ad_token::issue(campaign_id, &q.placement, &state.config.jwt_secret)?;
+    let dwell_ms_for_impression = rules
+        .get("dwell_ms_for_impression")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    Ok(Json(json!({
+        "success": true,
+        "data": {
+            "campaign_id": campaign_id,
+            "placement_key": q.placement,
+            "creative": chosen.creative.clone(),
+            "click_url": chosen.click_url.clone(),
+            "impression_token": token,
+            "dwell_ms_for_impression": dwell_ms_for_impression,
+        },
+        "error": null
+    })))
+}
+
+/// Saat başı cache'lenen eligible kampanya havuzunu döndürür.
+/// `feed_native` ve `gated_interstitial` aynı imza paylaşır — placement_key
+/// SQL WHERE filtresine girer ve cache key'e gömülür.
+async fn load_placement_pool(
+    db: &PgPool,
+    redis: &mut redis::aio::ConnectionManager,
+    placement_key: &str,
+) -> Result<Vec<PlacementCandidate>, AppError> {
+    let cache_key = placement_pool_cache_key(placement_key);
+
+    if let Ok(raw) = redis.get::<_, String>(&cache_key).await {
+        if let Ok(pool) = serde_json::from_str::<Vec<PlacementCandidate>>(&raw) {
+            return Ok(pool);
+        }
+    }
+
+    // Cache miss — query DB. Over-delivered exclusion happens in SQL so
+    // a campaign that hit target between cache refreshes still serves
+    // up to ~59min extra (intra-cache snapshot is stale by design).
+    let pool: Vec<PlacementCandidate> = sqlx::query_as(
+        r#"
+        SELECT
+            c.id,
+            c.creative,
+            c.click_url,
+            c.target_segment,
+            c.weight,
+            c.brand_id,
+            c.target_impressions,
+            c.starts_at,
+            c.ends_at,
+            COALESCE(m.impressions_total, 0)::bigint AS current_impressions
+        FROM ad_campaigns c
+        LEFT JOIN (
+            SELECT campaign_id, SUM(impressions) AS impressions_total
+            FROM ad_metrics
+            GROUP BY campaign_id
+        ) m ON m.campaign_id = c.id
+        WHERE c.placement_key = $1
+          AND c.status = 'active'
+          AND c.deleted_at IS NULL
+          AND c.is_dry_run = FALSE
+          AND NOW() BETWEEN c.starts_at AND c.ends_at
+          AND c.target_impressions IS NOT NULL
+          AND COALESCE(m.impressions_total, 0) < c.target_impressions
+        "#,
+    )
+    .bind(placement_key)
+    .fetch_all(db)
+    .await?;
+
+    if let Ok(serialized) = serde_json::to_string(&pool) {
+        let _: Result<(), _> = redis
+            .set_ex(&cache_key, serialized, PLACEMENT_POOL_TTL_SECS as u64)
+            .await;
+    }
+
+    Ok(pool)
 }
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -489,12 +705,25 @@ async fn accumulate_event(
 
 const GATE_PLACEMENT_KEY: &str = "gated_interstitial";
 
+/// Kullanıcının günde toplam kaç gate görebileceği. 8 → aşırı dating
+/// yapan kullanıcıyı bombalamamak için üst sınır. Aşıldığında gate
+/// `skipped("daily_cap")` döner, kullanıcı tarihi kaydedebilir.
+const GATE_PER_USER_PER_DAY: i64 = 8;
+
+/// Aynı kullanıcının aynı kampanyayı günde kaç kez görebileceği.
+/// 2 → diversity garantisi: tek brand kullanıcının günlük tüm gate'lerini
+/// dolduramaz.
+const GATE_PER_CAMPAIGN_PER_DAY: i64 = 2;
+
 #[derive(Deserialize)]
 struct GateNextQuery {
     /// Free-form context tag; only "date_create" is wired today. Bound
     /// into the issued gate_token so a token for one context can't be
     /// replayed against another.
     context: Option<String>,
+    /// Frontend-generated per-foreground session UUID for anti-fatigue.
+    /// Aynı session içinde aynı kampanyayı tekrar göstermemek için.
+    session_id: Option<String>,
 }
 
 async fn gate_next(
@@ -543,74 +772,95 @@ async fn gate_next(
         }
     }
 
-    // 3. Frequency caps. Two flavors here:
-    //    - frequency_cap_per_day: total gate impressions across all
-    //      sessions in the rolling day.
-    //    - frequency_cap_per_user_per_session: matches the per-session
-    //      cap convention used elsewhere (see cap_passes in /next).
+    // 3. Per-user-per-day global cap.
     let mut redis = state.redis.clone();
     let day = ad_targeting::today();
-    let day_key = format!("adcap:{}:{}:day:{}", auth.user_id, GATE_PLACEMENT_KEY, day);
-
-    if let Some(cap) = rules
-        .get("frequency_cap_per_day")
-        .and_then(|v| v.as_u64())
-    {
-        let count: i64 = redis.get(&day_key).await.unwrap_or(0);
-        if (count as u64) >= cap {
-            return Ok(skipped("freq_cap"));
-        }
-    }
-    if let Some(cap) = rules
-        .get("frequency_cap_per_user_per_session")
-        .and_then(|v| v.as_u64())
-    {
-        let count: i64 = redis.get(&day_key).await.unwrap_or(0);
-        if (count as u64) >= cap {
-            return Ok(skipped("session_cap"));
-        }
+    let day_key = format!("gate_day:{}:{}", auth.user_id, day);
+    let day_count: i64 = redis.get(&day_key).await.unwrap_or(0);
+    if day_count >= GATE_PER_USER_PER_DAY {
+        return Ok(skipped("daily_cap"));
     }
 
-    // 4. Eligible campaigns on this placement.
-    let candidates: Vec<CandidateRow> = sqlx::query_as(
-        r#"
-        SELECT
-            c.id, c.creative, c.click_url, c.target_segment, c.weight
-        FROM ad_campaigns c
-        WHERE c.placement_key = $1
-          AND c.status = 'active'
-          AND c.deleted_at IS NULL
-          AND c.is_dry_run = FALSE
-          AND NOW() BETWEEN c.starts_at AND c.ends_at
-        "#,
-    )
-    .bind(GATE_PLACEMENT_KEY)
-    .fetch_all(&state.db)
-    .await?;
-
-    if candidates.is_empty() {
+    // 4. Eligible pool (saat başı cache, paylaşılan loader).
+    let pool = load_placement_pool(&state.db, &mut redis, GATE_PLACEMENT_KEY).await?;
+    if pool.is_empty() {
         return Ok(skipped("no_campaign"));
     }
 
+    // 5. Targeting filter.
     let profile = ad_targeting::load_profile(&state.db, &mut redis, auth.user_id).await?;
-    let eligible: Vec<CandidateRow> = candidates
+    let targeted: Vec<PlacementCandidate> = pool
         .into_iter()
         .filter(|c| ad_targeting::matches_segment(&profile, c.target_segment.as_ref()))
         .collect();
-
-    if eligible.is_empty() {
+    if targeted.is_empty() {
         return Ok(skipped("no_eligible"));
     }
 
-    let chosen = pick_weighted(&eligible);
-    let campaign_id = chosen.id;
+    // 6. Per-user-per-campaign-per-day cap filter — bugün M kez görülen
+    //    kampanyaları havuzdan çıkar.
+    let mut campaign_day_filtered: Vec<PlacementCandidate> = Vec::with_capacity(targeted.len());
+    for c in targeted.iter() {
+        let camp_key = format!("gate_camp_day:{}:{}:{}", auth.user_id, c.id, day);
+        let camp_count: i64 = redis.get(&camp_key).await.unwrap_or(0);
+        if camp_count < GATE_PER_CAMPAIGN_PER_DAY {
+            campaign_day_filtered.push(c.clone());
+        }
+    }
+    if campaign_day_filtered.is_empty() {
+        return Ok(skipped("campaign_caps_exhausted"));
+    }
 
-    // Counters bump on impression — the user has now committed to
-    // seeing the ad, even though gate_complete hasn't fired yet.
-    // Brand counter accuracy matters more than gate abandonment.
+    // 7. Session anti-fatigue: filter campaigns seen this foreground session.
+    //    Boşalırsa seen-set'i sıfırla (devre başa).
+    let (eligible, seen_key) = if let Some(sid) = q.session_id.as_deref() {
+        let key = format!("gate_seen:{}:{}", auth.user_id, sid);
+        let seen: Vec<String> = redis.smembers(&key).await.unwrap_or_default();
+        let seen_ids: std::collections::HashSet<Uuid> =
+            seen.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect();
+        let unseen: Vec<PlacementCandidate> = campaign_day_filtered
+            .iter()
+            .filter(|c| !seen_ids.contains(&c.id))
+            .cloned()
+            .collect();
+        if unseen.is_empty() {
+            let _: Result<i64, _> = redis.del(&key).await;
+            (campaign_day_filtered, Some(key))
+        } else {
+            (unseen, Some(key))
+        }
+    } else {
+        (campaign_day_filtered, None)
+    };
+
+    // 8. Pacing-aware pick — gate için yüksek urgency cap (10x) son hafta
+    //    under-delivered kampanyaya agresif boost.
+    let pacing_pool: Vec<PacingCandidate> = eligible.iter().map(|c| c.to_pacing()).collect();
+    let Some(campaign_id) = pacing_selector::pick_one(
+        &pacing_pool,
+        Utc::now(),
+        pacing_selector::URGENCY_CAP_GATE,
+    ) else {
+        return Ok(skipped("pacing_empty"));
+    };
+    let chosen = eligible
+        .iter()
+        .find(|c| c.id == campaign_id)
+        .ok_or_else(|| AppError::Internal("picked campaign missing from pool".to_string()))?;
+
+    // 9. Counters: impression sayma + tüm cap'leri bump et. Gate'i kullanıcı
+    //    görmeyi kabul etmiş sayılır — impression burada işlenir, brand
+    //    counter accuracy gate_complete'in beklemesinden önemli.
     record_impression(&state.db, campaign_id, GATE_PLACEMENT_KEY).await?;
     let _: Result<i64, _> = redis.incr(&day_key, 1).await;
     let _: Result<i64, _> = redis.expire(&day_key, 86_400).await;
+    let camp_key = format!("gate_camp_day:{}:{}:{}", auth.user_id, campaign_id, day);
+    let _: Result<i64, _> = redis.incr(&camp_key, 1).await;
+    let _: Result<i64, _> = redis.expire(&camp_key, 86_400).await;
+    if let Some(key) = seen_key {
+        let _: Result<i64, _> = redis.sadd(&key, campaign_id.to_string()).await;
+        let _: Result<bool, _> = redis.expire(&key, PLACEMENT_SEEN_TTL_SECS).await;
+    }
 
     let (gate_token, _jti) = ad_token::issue_gate(
         campaign_id,

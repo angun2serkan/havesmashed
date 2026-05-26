@@ -43,7 +43,7 @@ async fn list_notifications(
 ) -> Result<Json<Value>, AppError> {
     let admin_user_id = ctx
         .admin_user_id
-        .ok_or_else(|| AppError::Forbidden("legacy admin key has no inbox".to_string()))?;
+        .ok_or_else(|| AppError::Forbidden("env-super has no inbox".to_string()))?;
     ctx.require_password_changed()?;
 
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
@@ -97,7 +97,7 @@ async fn unread_count(
 ) -> Result<Json<Value>, AppError> {
     let admin_user_id = ctx
         .admin_user_id
-        .ok_or_else(|| AppError::Forbidden("legacy admin key has no inbox".to_string()))?;
+        .ok_or_else(|| AppError::Forbidden("env-super has no inbox".to_string()))?;
     ctx.require_password_changed()?;
 
     let count: i64 = sqlx::query_scalar(
@@ -122,7 +122,7 @@ async fn mark_one_read(
 ) -> Result<Json<Value>, AppError> {
     let admin_user_id = ctx
         .admin_user_id
-        .ok_or_else(|| AppError::Forbidden("legacy admin key has no inbox".to_string()))?;
+        .ok_or_else(|| AppError::Forbidden("env-super has no inbox".to_string()))?;
     ctx.require_password_changed()?;
 
     let res = sqlx::query(
@@ -159,7 +159,7 @@ async fn mark_all_read(
 ) -> Result<Json<Value>, AppError> {
     let admin_user_id = ctx
         .admin_user_id
-        .ok_or_else(|| AppError::Forbidden("legacy admin key has no inbox".to_string()))?;
+        .ok_or_else(|| AppError::Forbidden("env-super has no inbox".to_string()))?;
     ctx.require_password_changed()?;
 
     let res = sqlx::query(
