@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::middleware::auth::{JWT_AUDIENCE_ADMIN, JWT_ISSUER};
 use crate::services::jwt_revocation;
 use crate::AppState;
 
@@ -95,6 +96,13 @@ pub struct AdminClaims {
     pub jti: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fam: Option<Uuid>,
+    /// SEC-106 — issuer + audience claims. Option çünkü SEC-106 öncesi
+    /// token'lar bu alanları taşımıyor; bir release grace period sonra
+    /// zorunlu yapılacak.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aud: Option<String>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -214,9 +222,28 @@ impl FromRequestParts<AppState> for AdminContext {
         let key = DecodingKey::from_secret(state.config.jwt_secret.as_bytes());
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_required_spec_claims(&["sub", "exp", "iat"]);
+        // SEC-106: aud manuel kontrol (legacy token'larda yok).
+        validation.validate_aud = false;
 
         let data = decode::<AdminClaims>(token, &key, &validation)?;
         let claims = data.claims;
+
+        // SEC-106 — iss/aud manuel kontrolü. Cross-context token reuse'i
+        // engeller: bir user JWT'si admin endpoint'inde decode olsa bile
+        // aud="user" görür ve mismatch ile reddedilir. Legacy token'lar
+        // (iss/aud taşımayan) grace period boyunca kabul edilir.
+        if let Some(iss) = claims.iss.as_deref() {
+            if iss != JWT_ISSUER {
+                return Err(AppError::Unauthorized("invalid token issuer".to_string()));
+            }
+        }
+        if let Some(aud) = claims.aud.as_deref() {
+            if aud != JWT_AUDIENCE_ADMIN {
+                return Err(AppError::Unauthorized(
+                    "token audience mismatch".to_string(),
+                ));
+            }
+        }
 
         let role = AdminRole::from_str(&claims.role)?;
 

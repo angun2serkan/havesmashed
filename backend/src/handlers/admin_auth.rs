@@ -40,6 +40,7 @@ use crate::error::AppError;
 use crate::middleware::admin_context::{
     AdminClaims, AdminContext, AdminRole, REVOCATION_SCOPE_ADMIN,
 };
+use crate::middleware::auth::{JWT_AUDIENCE_ADMIN, JWT_ISSUER};
 use crate::services::{csrf, jwt_revocation, password};
 use crate::AppState;
 
@@ -207,7 +208,7 @@ async fn login(
             // DB satırı yok; identity tamamen env değişkenlerinden gelir.
             // Refresh ve admin_context bu sentinel'i tanır ve özel yol işler.
             let (access_token, refresh_token) =
-                issue_super_tokens(&state.config.jwt_secret, None)?;
+                issue_super_tokens(&state.config.jwt_secret, None, None)?;
             // SEC-101: token'ları hem cookie hem body'de döndür. SEC-103:
             // CSRF token cookie'si (JS-okunabilir) + body'de raw değer.
             let (cookies, csrf_token) =
@@ -297,7 +298,7 @@ async fn login(
         ));
     }
     let (access_token, refresh_token) =
-        issue_tokens(&state.config.jwt_secret, &user, &role, None)?;
+        issue_tokens(&state.config.jwt_secret, &user, &role, None, None)?;
 
     let (cookies, csrf_token) =
         auth_cookies(&access_token, &refresh_token, state.config.is_production);
@@ -333,13 +334,18 @@ fn issue_tokens(
     user: &AdminUserRow,
     role: &AdminRole,
     impersonating: Option<Uuid>,
+    family_id: Option<Uuid>,
 ) -> Result<(String, String), AppError> {
     let now = Utc::now().timestamp();
     // SEC-105 — her token kendi unique JTI'sini taşır; access ve refresh
     // ortak family_id ile bağlanır → logout family revoke ettiğinde
     // ikisi de geçersiz olur (cookie path scoping nedeniyle refresh'i
     // doğrudan revoke etmek zor).
-    let family_id = Uuid::new_v4();
+    //
+    // SEC-107 — `family_id` parametresi: None ise yeni login → fresh
+    // family; Some(id) ise refresh rotation → eski family_id korunur
+    // ki logout aynı session lineage'ini revoke edebilsin.
+    let family_id = family_id.unwrap_or_else(Uuid::new_v4);
     let access_claims = AdminClaims {
         sub: user.id,
         role: role.as_str().to_string(),
@@ -348,6 +354,9 @@ fn issue_tokens(
         pwc: user.must_change_password,
         jti: Some(Uuid::new_v4()),
         fam: Some(family_id),
+        // SEC-106 — iss/aud her admin token'ında.
+        iss: Some(JWT_ISSUER.to_string()),
+        aud: Some(JWT_AUDIENCE_ADMIN.to_string()),
         iat: now,
         exp: now + ACCESS_TTL_SECS,
     };
@@ -359,6 +368,8 @@ fn issue_tokens(
         pwc: user.must_change_password,
         jti: Some(Uuid::new_v4()),
         fam: Some(family_id),
+        iss: Some(JWT_ISSUER.to_string()),
+        aud: Some(JWT_AUDIENCE_ADMIN.to_string()),
         iat: now,
         exp: now + REFRESH_TTL_SECS,
     };
@@ -377,9 +388,12 @@ fn issue_tokens(
 fn issue_super_tokens(
     secret: &str,
     impersonating: Option<Uuid>,
+    family_id: Option<Uuid>,
 ) -> Result<(String, String), AppError> {
     let now = Utc::now().timestamp();
-    let family_id = Uuid::new_v4();
+    // SEC-107 — refresh rotation aynı family_id'yi sürdürür; ilk login
+    // None geçer ve yeni family doğar.
+    let family_id = family_id.unwrap_or_else(Uuid::new_v4);
     let mk_claims = |exp_offset: i64| AdminClaims {
         sub: Uuid::nil(),
         role: AdminRole::Super.as_str().to_string(),
@@ -388,6 +402,9 @@ fn issue_super_tokens(
         pwc: false,
         jti: Some(Uuid::new_v4()),
         fam: Some(family_id),
+        // SEC-106 — env-super token'ı da admin audience'ında.
+        iss: Some(JWT_ISSUER.to_string()),
+        aud: Some(JWT_AUDIENCE_ADMIN.to_string()),
         iat: now,
         exp: now + exp_offset,
     };
@@ -430,8 +447,81 @@ async fn refresh(
     let key = jsonwebtoken::DecodingKey::from_secret(state.config.jwt_secret.as_bytes());
     let mut validation = jsonwebtoken::Validation::new(Algorithm::HS256);
     validation.set_required_spec_claims(&["sub", "exp", "iat"]);
+    // SEC-106: aud manuel kontrol (legacy refresh token'larında alan yok).
+    validation.validate_aud = false;
     let data = jsonwebtoken::decode::<AdminClaims>(&token, &key, &validation)?;
     let claims = data.claims;
+
+    // SEC-106 — issuer/audience validation. Refresh akışı login ile aynı
+    // güvence: user refresh token'ı admin /refresh endpoint'inde geçemez.
+    if let Some(iss) = claims.iss.as_deref() {
+        if iss != JWT_ISSUER {
+            return Err(AppError::Unauthorized("invalid token issuer".to_string()));
+        }
+    }
+    if let Some(aud) = claims.aud.as_deref() {
+        if aud != JWT_AUDIENCE_ADMIN {
+            return Err(AppError::Unauthorized(
+                "token audience mismatch".to_string(),
+            ));
+        }
+    }
+
+    // SEC-107 — refresh token rotation + replay detection.
+    //
+    // 1) Family halihazırda revoke edilmişse (logout ya da daha önceki bir
+    //    replay), token'ı doğrudan reddet.
+    // 2) Bu refresh'in JTI'si zaten revoke ise → REPLAY: iki taraftan biri
+    //    saldırgan. Hangisi bilinmez. Defansif olarak tüm family + tüm
+    //    user session'larını öldür (logout-all). Kullanıcı tekrar login
+    //    olmak zorunda — saldırgan stealth'i kırılır.
+    // 3) Aksi halde mevcut JTI'yi revoke et (rotation: aynı refresh token
+    //    bir daha kabul edilmesin), yeni access+refresh aynı family altında
+    //    issue edilir.
+    //
+    // Legacy refresh token'larda (SEC-105 öncesi) jti/fam yok → rotation
+    // ve replay detection devre dışı (Option = None), bir release grace.
+    let mut redis = state.redis.clone();
+    if let Some(fam) = claims.fam {
+        if jwt_revocation::is_family_revoked(&mut redis, fam).await {
+            return Err(AppError::Unauthorized(
+                "session revoked".to_string(),
+            ));
+        }
+    }
+    if let Some(jti) = claims.jti {
+        if jwt_revocation::is_jti_revoked(&mut redis, jti).await {
+            // REPLAY detected — defansif logout-all.
+            if let Some(fam) = claims.fam {
+                let _ = jwt_revocation::revoke_family(&mut redis, fam, REFRESH_TTL_SECS).await;
+            }
+            // sub == Uuid::nil() env-super için global env-super logout-all
+            // anlamına gelir — credential compromise senaryosunda istediğimiz.
+            let _ = jwt_revocation::set_logout_all_before(
+                &mut redis,
+                REVOCATION_SCOPE_ADMIN,
+                claims.sub,
+                Utc::now().timestamp(),
+                REFRESH_TTL_SECS,
+            )
+            .await;
+            tracing::warn!(
+                user_id = %claims.sub,
+                family = ?claims.fam,
+                jti = %jti,
+                "SEC-107 refresh token replay detected — family + user sessions revoked"
+            );
+            return Err(AppError::Unauthorized(
+                "refresh token replay detected — all sessions revoked".to_string(),
+            ));
+        }
+        // Rotation: revoke the JTI we just consumed so any future presentation
+        // (whether by the attacker or the legitimate client misbehaving) is
+        // detected as replay. TTL = refresh token kalan ömrü; expire sonrası
+        // zaten kabul edilmez, Redis temizlenir.
+        let remaining = (claims.exp - Utc::now().timestamp()).max(1);
+        let _ = jwt_revocation::revoke_jti(&mut redis, jti, remaining).await;
+    }
 
     // ── Env-super refresh: sub=Uuid::nil() sentinel ─────────────
     // DB satırı olmadığı için fresh mint yeterli; impersonation
@@ -452,8 +542,11 @@ async fn refresh(
                 "env-super credentials not configured".to_string(),
             ));
         }
+        // SEC-107 — rotation: aynı family_id'yi koru ki logout (family
+        // revoke) önceki + sonraki tüm pair'leri kapatabilsin. Legacy
+        // token'da fam yoksa fresh family doğar.
         let (access_token, refresh_token) =
-            issue_super_tokens(&state.config.jwt_secret, claims.imp)?;
+            issue_super_tokens(&state.config.jwt_secret, claims.imp, claims.fam)?;
         let (cookies, csrf_token) =
             auth_cookies(&access_token, &refresh_token, state.config.is_production);
         return Ok(json_with_cookies(
@@ -492,8 +585,9 @@ async fn refresh(
     }
 
     let role = AdminRole::from_str(&user.role)?;
+    // SEC-107 — rotation: family preserve. Legacy fam=None ise fresh.
     let (access_token, refresh_token) =
-        issue_tokens(&state.config.jwt_secret, &user, &role, claims.imp)?;
+        issue_tokens(&state.config.jwt_secret, &user, &role, claims.imp, claims.fam)?;
 
     let (cookies, csrf_token) =
         auth_cookies(&access_token, &refresh_token, state.config.is_production);
@@ -699,8 +793,12 @@ async fn change_password(
     .fetch_one(&state.db)
     .await?;
     let role = AdminRole::from_str(&user.role)?;
+    // SEC-107 — password change sonrası tamamen yeni family doğar; eski
+    // family'deki refresh token'lar (varsa) bu session lineage'ine bağlı
+    // kalmaz. Bilinçli güvenlik tercihi: parolayı değiştiren kullanıcı
+    // genellikle compromise şüphesinden yapar.
     let (access_token, refresh_token) =
-        issue_tokens(&state.config.jwt_secret, &user, &role, ctx.impersonating_brand_id)?;
+        issue_tokens(&state.config.jwt_secret, &user, &role, ctx.impersonating_brand_id, None)?;
 
     let (cookies, csrf_token) =
         auth_cookies(&access_token, &refresh_token, state.config.is_production);
@@ -937,4 +1035,127 @@ async fn impersonate_stop(
         "data": { "ok": true },
         "error": null,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jsonwebtoken::{decode, DecodingKey, Validation};
+
+    fn fake_user() -> AdminUserRow {
+        AdminUserRow {
+            id: Uuid::now_v7(),
+            password_hash: String::new(),
+            display_name: "Test".to_string(),
+            role: "brand_admin".to_string(),
+            brand_id: Some(Uuid::now_v7()),
+            is_active: true,
+            must_change_password: false,
+        }
+    }
+
+    fn decode_admin(token: &str, secret: &str, validate_aud: bool, aud: Option<&str>) -> Result<AdminClaims, jsonwebtoken::errors::Error> {
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_required_spec_claims(&["sub", "exp", "iat"]);
+        validation.validate_aud = validate_aud;
+        if let Some(a) = aud {
+            validation.set_audience(&[a]);
+        }
+        let key = DecodingKey::from_secret(secret.as_bytes());
+        decode::<AdminClaims>(token, &key, &validation).map(|d| d.claims)
+    }
+
+    // SEC-106 — brand_admin mint edilen access+refresh, iss+aud="admin" taşımalı.
+    #[test]
+    fn brand_admin_tokens_have_iss_and_admin_aud() {
+        let secret = "test_secret_at_least_64_chars_long_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let user = fake_user();
+        let role = AdminRole::Brand;
+        let (access, refresh) = issue_tokens(secret, &user, &role, None, None).unwrap();
+
+        for token in [&access, &refresh] {
+            let claims = decode_admin(token, secret, false, None).unwrap();
+            assert_eq!(claims.iss.as_deref(), Some(JWT_ISSUER));
+            assert_eq!(claims.aud.as_deref(), Some(JWT_AUDIENCE_ADMIN));
+        }
+    }
+
+    // SEC-106 — env-super token'ı da admin audience'ında olmalı.
+    #[test]
+    fn super_tokens_have_iss_and_admin_aud() {
+        let secret = "test_secret_at_least_64_chars_long_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let (access, refresh) = issue_super_tokens(secret, None, None).unwrap();
+        for token in [&access, &refresh] {
+            let claims = decode_admin(token, secret, false, None).unwrap();
+            assert_eq!(claims.iss.as_deref(), Some(JWT_ISSUER));
+            assert_eq!(claims.aud.as_deref(), Some(JWT_AUDIENCE_ADMIN));
+        }
+    }
+
+    // SEC-106 — admin token user audience validation'ı geçmemeli.
+    #[test]
+    fn admin_token_rejected_for_user_audience() {
+        use crate::middleware::auth::JWT_AUDIENCE_USER;
+        let secret = "test_secret_at_least_64_chars_long_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let user = fake_user();
+        let (access, _) = issue_tokens(secret, &user, &AdminRole::Brand, None, None).unwrap();
+        let err = decode_admin(&access, secret, true, Some(JWT_AUDIENCE_USER)).unwrap_err();
+        assert!(matches!(
+            err.kind(),
+            jsonwebtoken::errors::ErrorKind::InvalidAudience
+        ));
+    }
+
+    // SEC-107 — issue_tokens çağrısında family_id=None ise her seferinde
+    // taze bir family doğmalı (yeni login senaryosu).
+    #[test]
+    fn new_login_generates_fresh_family() {
+        let secret = "test_secret_at_least_64_chars_long_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let user = fake_user();
+        let role = AdminRole::Brand;
+        let (a1, _) = issue_tokens(secret, &user, &role, None, None).unwrap();
+        let (a2, _) = issue_tokens(secret, &user, &role, None, None).unwrap();
+        let c1 = decode_admin(&a1, secret, false, None).unwrap();
+        let c2 = decode_admin(&a2, secret, false, None).unwrap();
+        assert!(c1.fam.is_some() && c2.fam.is_some());
+        assert_ne!(c1.fam, c2.fam, "her login için family farklı olmalı");
+    }
+
+    // SEC-107 — refresh rotation senaryosu: issue_tokens'a aynı family_id
+    // verildiğinde access + refresh aynı family altında, ama JTI'ler
+    // önceki pair'den farklı olmalı.
+    #[test]
+    fn refresh_rotation_preserves_family_rotates_jti() {
+        let secret = "test_secret_at_least_64_chars_long_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let user = fake_user();
+        let role = AdminRole::Brand;
+        let (a_old, r_old) = issue_tokens(secret, &user, &role, None, None).unwrap();
+        let c_old = decode_admin(&r_old, secret, false, None).unwrap();
+        let family = c_old.fam.expect("login family doğdu");
+
+        // Rotation çağrısı — aynı family ile yeni pair.
+        let (a_new, r_new) = issue_tokens(secret, &user, &role, None, Some(family)).unwrap();
+        let c_old_access = decode_admin(&a_old, secret, false, None).unwrap();
+        let c_new_access = decode_admin(&a_new, secret, false, None).unwrap();
+        let c_new_refresh = decode_admin(&r_new, secret, false, None).unwrap();
+
+        assert_eq!(c_new_access.fam, Some(family));
+        assert_eq!(c_new_refresh.fam, Some(family));
+        assert_ne!(c_old_access.jti, c_new_access.jti, "access JTI rotate olmalı");
+        assert_ne!(c_old.jti, c_new_refresh.jti, "refresh JTI rotate olmalı");
+    }
+
+    // SEC-107 — env-super tarafı için aynı rotation kontratı.
+    #[test]
+    fn super_refresh_rotation_preserves_family() {
+        let secret = "test_secret_at_least_64_chars_long_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let (_, r_old) = issue_super_tokens(secret, None, None).unwrap();
+        let c_old = decode_admin(&r_old, secret, false, None).unwrap();
+        let family = c_old.fam.expect("super login family doğdu");
+
+        let (_, r_new) = issue_super_tokens(secret, None, Some(family)).unwrap();
+        let c_new = decode_admin(&r_new, secret, false, None).unwrap();
+        assert_eq!(c_new.fam, Some(family));
+        assert_ne!(c_old.jti, c_new.jti, "super refresh JTI rotate olmalı");
+    }
 }
