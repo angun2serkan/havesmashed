@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::middleware::auth::AuthUser;
-use crate::services::{crypto, csrf, invite, wordlist};
+use crate::middleware::auth::{AuthUser, REVOCATION_SCOPE_USER};
+use crate::services::{crypto, csrf, invite, jwt_revocation, wordlist};
 use crate::AppState;
 
 // ── Cookie configuration (SEC-102) ───────────────────────────────
@@ -147,6 +147,7 @@ pub fn router() -> Router<AppState> {
         .route("/register", post(register))
         .route("/login", post(login))
         .route("/logout", post(logout))
+        .route("/logout-all", post(logout_all))
         .route("/nickname", put(set_nickname))
         .route("/me", get(get_me))
         .route("/birthday", put(set_birthday))
@@ -283,11 +284,56 @@ async fn login(
 }
 
 /// POST /api/auth/logout
-/// SEC-102: cookie'yi server-side expire et. JWT revocation list
-/// (SEC-105) gelene kadar token kendi süresinin sonuna kadar valid
-/// kalır, ama browser cookie expire edildiği için pratik olarak
-/// kullanılamaz.
-async fn logout(State(state): State<AppState>) -> Result<Response, AppError> {
+/// SEC-102: cookie'yi server-side expire et.
+/// SEC-105: JTI'yi Redis revocation list'e ekle — token kalan ömrü
+/// boyunca artık kabul edilmez (bir saldırgan cookie'yi kopyalamış
+/// olsa bile).
+async fn logout(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Response, AppError> {
+    if let Some(jti) = auth.jti {
+        let mut redis = state.redis.clone();
+        let now = chrono::Utc::now().timestamp();
+        let ttl = (auth.exp - now).max(1);
+        let _ = jwt_revocation::revoke_jti(&mut redis, jti, ttl).await;
+    }
+    Ok(json_with_cookies(
+        serde_json::json!({
+            "success": true,
+            "data": { "ok": true },
+            "error": null
+        }),
+        clear_auth_cookies(state.config.is_production),
+    ))
+}
+
+/// POST /api/auth/logout-all
+/// SEC-105: bu user için Redis'te `logout_all:user:{user_id}` =
+/// şu anki timestamp set eder. Auth middleware token.iat < bu
+/// timestamp olan tüm session'ları reject eder.
+async fn logout_all(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Response, AppError> {
+    let mut redis = state.redis.clone();
+    let now = chrono::Utc::now().timestamp();
+    // TTL = JWT max ömrü; daha eski token'lar zaten expire.
+    let ttl = state.config.jwt_expiry_secs as i64;
+    let _ = jwt_revocation::set_logout_all_before(
+        &mut redis,
+        REVOCATION_SCOPE_USER,
+        auth.user_id,
+        now,
+        ttl,
+    )
+    .await;
+    // Mevcut token'ın JTI'sini de revoke et (logout_all_before yazma ile
+    // bu request arasındaki yarış için).
+    if let Some(jti) = auth.jti {
+        let token_ttl = (auth.exp - now).max(1);
+        let _ = jwt_revocation::revoke_jti(&mut redis, jti, token_ttl).await;
+    }
     Ok(json_with_cookies(
         serde_json::json!({
             "success": true,

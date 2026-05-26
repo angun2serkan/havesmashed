@@ -38,7 +38,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::services::jwt_revocation;
 use crate::AppState;
+
+/// SEC-105 logout-all scope label — Redis key namespacing.
+pub const REVOCATION_SCOPE_ADMIN: &str = "admin";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminRole {
@@ -71,6 +75,12 @@ impl AdminRole {
 ///
 /// `imp` (impersonating brand_id) is set when super_admin enters
 /// "act as brand" mode. Mutations log this for forensics.
+///
+/// `jti` (SEC-105) — token-unique id; Redis revocation list anahtarı.
+/// `fam` (SEC-105) — access + refresh pair'i bağlayan family_id.
+/// İkisi de Option çünkü SEC-105 öncesi issue edilmiş legacy
+/// token'lar bu alanları taşımıyor; grace period boyunca eksikse skip
+/// edilir, sonraki release'de zorunlu yapılacak.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminClaims {
     pub sub: Uuid,
@@ -81,6 +91,10 @@ pub struct AdminClaims {
     pub imp: Option<Uuid>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pwc: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jti: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fam: Option<Uuid>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -99,6 +113,18 @@ pub struct AdminContext {
     /// Env-super identity label (ADMIN_API_NAME). None for JWT brand_admin
     /// (use `admin_user_id` to look up email/display_name).
     pub actor_name: Option<String>,
+    /// SEC-105 — current token's JTI (None for legacy tokens issued
+    /// before SEC-105 deploy). Logout handler uses this to revoke.
+    pub jti: Option<Uuid>,
+    /// SEC-105 — session family_id; access+refresh pair'i bağlar.
+    /// Logout family revoke ettiğinde ikisi de geçersiz olur. Login
+    /// timestamp'i (logout-all check için) `iat`'da zaten var.
+    pub fam: Option<Uuid>,
+    /// SEC-105 — token issue timestamp; logout_all_before kontrolünde
+    /// kullanılır.
+    pub iat: i64,
+    /// SEC-105 — token expire timestamp; revocation TTL hesabı için.
+    pub exp: i64,
 }
 
 impl AdminContext {
@@ -194,6 +220,32 @@ impl FromRequestParts<AppState> for AdminContext {
 
         let role = AdminRole::from_str(&claims.role)?;
 
+        // SEC-105 — revocation check'leri. Legacy token'larda jti/fam
+        // alanları yok → skip (1 release grace). logout_all_before her
+        // zaman çalışır (iat tüm token'larda var).
+        let mut redis = state.redis.clone();
+        if let Some(jti) = claims.jti {
+            if jwt_revocation::is_jti_revoked(&mut redis, jti).await {
+                return Err(AppError::Unauthorized("token revoked".to_string()));
+            }
+        }
+        if let Some(fam) = claims.fam {
+            if jwt_revocation::is_family_revoked(&mut redis, fam).await {
+                return Err(AppError::Unauthorized(
+                    "session revoked".to_string(),
+                ));
+            }
+        }
+        if let Some(threshold) =
+            jwt_revocation::logout_all_before(&mut redis, REVOCATION_SCOPE_ADMIN, claims.sub).await
+        {
+            if claims.iat < threshold {
+                return Err(AppError::Unauthorized(
+                    "all sessions revoked — please log in again".to_string(),
+                ));
+            }
+        }
+
         // ── Env-super JWT: sub=Uuid::nil() sentinel + role=super_admin ──
         // admin_users tablosunda satır yok; admin_user_id=None kalır
         // (mevcut handler'lar bu None'ı env-super sinyali olarak kullanıyor).
@@ -229,6 +281,10 @@ impl FromRequestParts<AppState> for AdminContext {
                 impersonating_brand_id,
                 password_change_required: false,
                 actor_name: Some(state.config.admin_api_name.clone()),
+                jti: claims.jti,
+                fam: claims.fam,
+                iat: claims.iat,
+                exp: claims.exp,
             });
         }
 
@@ -254,6 +310,10 @@ impl FromRequestParts<AppState> for AdminContext {
             impersonating_brand_id: None,
             password_change_required: claims.pwc,
             actor_name: None,
+            jti: claims.jti,
+            fam: claims.fam,
+            iat: claims.iat,
+            exp: claims.exp,
         })
     }
 }

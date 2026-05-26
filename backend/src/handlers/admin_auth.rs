@@ -37,8 +37,10 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::middleware::admin_context::{AdminClaims, AdminContext, AdminRole};
-use crate::services::{csrf, password};
+use crate::middleware::admin_context::{
+    AdminClaims, AdminContext, AdminRole, REVOCATION_SCOPE_ADMIN,
+};
+use crate::services::{csrf, jwt_revocation, password};
 use crate::AppState;
 
 const ACCESS_TTL_SECS: i64 = 60 * 60;        // 1 hour
@@ -150,6 +152,7 @@ pub fn router() -> Router<AppState> {
         .route("/auth/login", post(login))
         .route("/auth/refresh", post(refresh))
         .route("/auth/logout", post(logout))
+        .route("/auth/logout-all", post(logout_all))
         .route("/auth/change-password", post(change_password))
         .route("/me", get(me))
         .route("/impersonate", post(impersonate_start))
@@ -332,12 +335,19 @@ fn issue_tokens(
     impersonating: Option<Uuid>,
 ) -> Result<(String, String), AppError> {
     let now = Utc::now().timestamp();
+    // SEC-105 — her token kendi unique JTI'sini taşır; access ve refresh
+    // ortak family_id ile bağlanır → logout family revoke ettiğinde
+    // ikisi de geçersiz olur (cookie path scoping nedeniyle refresh'i
+    // doğrudan revoke etmek zor).
+    let family_id = Uuid::new_v4();
     let access_claims = AdminClaims {
         sub: user.id,
         role: role.as_str().to_string(),
         brand_id: user.brand_id,
         imp: impersonating,
         pwc: user.must_change_password,
+        jti: Some(Uuid::new_v4()),
+        fam: Some(family_id),
         iat: now,
         exp: now + ACCESS_TTL_SECS,
     };
@@ -347,6 +357,8 @@ fn issue_tokens(
         brand_id: user.brand_id,
         imp: impersonating,
         pwc: user.must_change_password,
+        jti: Some(Uuid::new_v4()),
+        fam: Some(family_id),
         iat: now,
         exp: now + REFRESH_TTL_SECS,
     };
@@ -367,12 +379,15 @@ fn issue_super_tokens(
     impersonating: Option<Uuid>,
 ) -> Result<(String, String), AppError> {
     let now = Utc::now().timestamp();
+    let family_id = Uuid::new_v4();
     let mk_claims = |exp_offset: i64| AdminClaims {
         sub: Uuid::nil(),
         role: AdminRole::Super.as_str().to_string(),
         brand_id: None,
         imp: impersonating,
         pwc: false,
+        jti: Some(Uuid::new_v4()),
+        fam: Some(family_id),
         iat: now,
         exp: now + exp_offset,
     };
@@ -522,14 +537,65 @@ fn cookie_value(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
 // ════════════════════════════════════════════════════════════════
 // POST /api/admin/auth/logout
 // ════════════════════════════════════════════════════════════════
-// SEC-101: server-side cookie expire. JWT revocation list (SEC-105)
-// gelene kadar token'ın kendi expiry'sine kadar valid kalır — ama
-// browser cookie expire edildiği için pratik olarak kullanılamaz.
+// SEC-105 — token artık gerçek anlamda revoke ediliyor:
+//   * family_id Redis'e revoke listesine eklenir (TTL = refresh ömrü).
+//   * Bu sayede hem access hem refresh token aynı anda öldürülür
+//     (cookie path scoping nedeniyle refresh cookie'sini direkt
+//     okuyamadığımız için family revocation pattern'i şart).
+//   * Cookie de Set-Cookie Max-Age=0 ile browser tarafında temizlenir.
 
 async fn logout(
     State(state): State<AppState>,
-    _ctx: AdminContext,
+    ctx: AdminContext,
 ) -> Result<Response, AppError> {
+    if let Some(fam) = ctx.fam {
+        let mut redis = state.redis.clone();
+        // TTL = refresh token tam ömrü; access çoktan expire olsa bile
+        // refresh için saklamak yeterli süre.
+        let _ = jwt_revocation::revoke_family(&mut redis, fam, REFRESH_TTL_SECS).await;
+    }
+    Ok(json_with_cookies(
+        json!({ "success": true, "data": { "ok": true }, "error": null }),
+        clear_auth_cookies(state.config.is_production),
+    ))
+}
+
+// ════════════════════════════════════════════════════════════════
+// POST /api/admin/auth/logout-all
+// ════════════════════════════════════════════════════════════════
+// SEC-105 — "tüm cihazlardan çıkış". Bu user_id için Redis'te
+// `logout_all:admin:{user_id}` = şu anki unix timestamp set ediliyor;
+// auth middleware token.iat < bu timestamp ise reject ediyor.
+//
+// Mevcut request'in token'ı da reject olur (kendi iat'i de eskidir),
+// ama önce response Set-Cookie ile cookie'leri temizler. Frontend
+// "tüm cihazlardan çıkış"ı tetiklediği cihaz dahil yeniden login
+// yapılır — kullanıcının bilinçli aksiyonu.
+//
+// env-super için sub=Uuid::nil() — global env-super logout-all anlamına
+// gelir, ki credential compromise senaryosunda tam istediğimiz.
+
+async fn logout_all(
+    State(state): State<AppState>,
+    ctx: AdminContext,
+) -> Result<Response, AppError> {
+    let mut redis = state.redis.clone();
+    let now = Utc::now().timestamp();
+    // TTL = refresh token tam ömrü; bu kadar süre içinde issue edilmiş
+    // tüm token'ları kapsar. Daha eski token'lar zaten expire.
+    let _ = jwt_revocation::set_logout_all_before(
+        &mut redis,
+        REVOCATION_SCOPE_ADMIN,
+        ctx.admin_user_id.unwrap_or(Uuid::nil()),
+        now,
+        REFRESH_TTL_SECS,
+    )
+    .await;
+    // Mevcut session'ın family'si de ayrıca revoke — logout-all henüz
+    // Redis'e yazılmadan paralel bir request bu token'ı kullanabilir.
+    if let Some(fam) = ctx.fam {
+        let _ = jwt_revocation::revoke_family(&mut redis, fam, REFRESH_TTL_SECS).await;
+    }
     Ok(json_with_cookies(
         json!({ "success": true, "data": { "ok": true }, "error": null }),
         clear_auth_cookies(state.config.is_production),
