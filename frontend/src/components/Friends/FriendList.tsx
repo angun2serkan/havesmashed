@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { UserCheck, UserX, Clock, Wifi } from "lucide-react";
+import { UserCheck, UserX, Wifi } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { useFriendStore } from "@/stores/friendStore";
@@ -141,8 +141,6 @@ function FriendBadgeSection({ friendId }: { friendId: string }) {
 export function FriendList() {
   const currentUser = useAuthStore((s) => s.user);
   const connections = useFriendStore((s) => s.connections);
-  const pendingRequests = useFriendStore((s) => s.pendingRequests);
-  const updateConnectionStatus = useFriendStore((s) => s.updateConnectionStatus);
   const removeConnection = useFriendStore((s) => s.removeConnection);
 
   const handleRemove = async (id: string) => {
@@ -158,47 +156,6 @@ export function FriendList() {
 
   return (
     <div className="space-y-4">
-      {/* Pending Requests */}
-      {pendingRequests.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold text-dark-300 uppercase tracking-wider mb-3">
-            Pending Requests
-          </h3>
-          <div className="space-y-2">
-            {pendingRequests.map((req) => (
-              <Card key={req.id} className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <Clock size={18} className="text-yellow-400" />
-                  <div className="flex flex-col">
-                    <span className="text-sm text-white font-medium">
-                      {req.friendNickname ?? "Unknown"}
-                    </span>
-                    <span className="text-[10px] text-dark-500">
-                      Wants to connect
-                    </span>
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => updateConnectionStatus(req.id, "accepted")}
-                  >
-                    Accept
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => updateConnectionStatus(req.id, "rejected")}
-                  >
-                    Decline
-                  </Button>
-                </div>
-              </Card>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Friends */}
       <div>
         <h3 className="text-sm font-semibold text-dark-300 uppercase tracking-wider mb-3">
