@@ -67,10 +67,14 @@ const ACCESS_COOKIE_PATH: &str = "/api/admin";
 const REFRESH_COOKIE_PATH: &str = "/api/admin/auth/refresh";
 
 // SEC-103 — CSRF double-submit token. HttpOnly DEĞİL (frontend JS okumalı),
-// SameSite=Strict, access cookie ile aynı path scope. Token her login/
-// refresh/change-password'da rotate edilir.
+// SameSite=Strict. Path "/" çünkü admin SPA sayfaları root path'te servis
+// ediliyor ve `document.cookie` API'si path-scoped çalışır: cookie
+// Path="/api/admin" olursa SPA sayfasının JS'i onu okuyamaz → X-CSRF-Token
+// header'ı eklenmez → backend cookie var + header yok kombinasyonunu
+// mismatch olarak reddeder (403). Token her login/refresh/change-password'da
+// rotate edilir.
 const CSRF_COOKIE_NAME: &str = "admin_csrf_token";
-const CSRF_COOKIE_PATH: &str = "/api/admin";
+const CSRF_COOKIE_PATH: &str = "/";
 
 fn build_cookie(name: &str, value: &str, path: &str, max_age: i64, secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };

@@ -28,9 +28,13 @@ use crate::AppState;
 const ACCESS_COOKIE_NAME: &str = "user_access_token";
 const ACCESS_COOKIE_PATH: &str = "/api";
 // SEC-103 — CSRF double-submit cookie. HttpOnly DEĞİL (JS okumalı),
-// SameSite=Strict. Path access cookie ile aynı.
+// SameSite=Strict. Path "/" çünkü frontend SPA sayfaları (örn. /dates,
+// /settings) root path'te servis ediliyor ve `document.cookie` API'si
+// path-scoped çalışır: cookie Path="/api" olursa SPA sayfasının JS'i
+// onu okuyamaz → X-CSRF-Token header'ı eklenmez → backend cookie var
+// + header yok kombinasyonunu mismatch olarak reddeder (403).
 const CSRF_COOKIE_NAME: &str = "user_csrf_token";
-const CSRF_COOKIE_PATH: &str = "/api";
+const CSRF_COOKIE_PATH: &str = "/";
 
 fn build_cookie(name: &str, value: &str, path: &str, max_age: i64, secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };
