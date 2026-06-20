@@ -107,7 +107,7 @@ export interface Connection {
   friendNickname: string | null;
   topBadgeIcon: string | null;
   color: string; // hex like "#FF5733"
-  status: "pending" | "accepted" | "rejected";
+  status: "accepted";
   createdAt: string;
 }
 

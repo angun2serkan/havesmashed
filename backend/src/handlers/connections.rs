@@ -30,11 +30,6 @@ pub struct InviteResponse {
 }
 
 #[derive(Deserialize)]
-pub struct RespondConnectionRequest {
-    pub action: String,
-}
-
-#[derive(Deserialize)]
 pub struct ListConnectionsQuery {
     pub status: Option<String>,
 }
@@ -67,7 +62,6 @@ pub fn invite_router() -> Router<AppState> {
 pub fn connection_router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_connections))
-        .route("/respond", post(respond_connection))
         .route("/add", post(add_friend_by_code))
         .route("/{id}", axum::routing::delete(delete_connection))
         .route("/{id}/color", put(set_friend_color))
@@ -278,42 +272,6 @@ async fn add_friend_by_code(
             })))
         }
     }
-}
-
-/// POST /api/connections/respond
-async fn respond_connection(
-    State(state): State<AppState>,
-    auth: AuthUser,
-    Json(body): Json<RespondConnectionRequest>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let new_status = match body.action.as_str() {
-        "accept" => "accepted",
-        "reject" => "rejected",
-        _ => return Err(AppError::BadRequest("action must be 'accept' or 'reject'".to_string())),
-    };
-
-    let result = sqlx::query(
-        r#"
-        UPDATE connections
-        SET status = $1, updated_at = NOW()
-        WHERE responder_id = $2 AND status = 'pending'
-        RETURNING id
-        "#,
-    )
-    .bind(new_status)
-    .bind(auth.user_id)
-    .execute(&state.db)
-    .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound("No pending connection found".to_string()));
-    }
-
-    Ok(Json(json!({
-        "success": true,
-        "data": { "status": new_status },
-        "error": null
-    })))
 }
 
 /// GET /api/connections

@@ -356,12 +356,6 @@ export const api = {
     }));
   },
 
-  respondToConnection: (action: "accept" | "reject") =>
-    request<{ status: string }>("/connections/respond", {
-      method: "POST",
-      body: JSON.stringify({ action }),
-    }),
-
   deleteConnection: (id: string) =>
     request<{ id: string; message: string }>(`/connections/${id}`, {
       method: "DELETE",
