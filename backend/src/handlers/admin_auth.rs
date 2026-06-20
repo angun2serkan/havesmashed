@@ -92,11 +92,21 @@ fn build_csrf_cookie(value: &str, max_age: i64, secure: bool) -> String {
     )
 }
 
-/// (access_cookie, refresh_cookie, csrf_cookie, csrf_token_value).
-/// CSRF token'ını response body'sine de koyabilmek için raw değer
-/// olarak da döndürüyoruz (frontend ilk login'de header'a yerleştirebilir
-/// ya da cookie'den de okuyabilir).
-fn auth_cookies(access: &str, refresh: &str, is_production: bool) -> ([String; 3], String) {
+/// Migration helper: pre-fix CSRF cookie Path=/api/admin ile set ediliyordu.
+/// Tarayıcı farklı path'li aynı isimli cookie'leri ayrı saklar; yeni Path=/
+/// cookie'sini set etmek eskisini silmez. Bu fonksiyon eski path'teki
+/// cookie'yi explicit Max-Age=0 ile expire eder. Admin login/refresh/logout/
+/// change-password response'larına ekleniyor.
+fn build_legacy_csrf_expire(secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!("{CSRF_COOKIE_NAME}={secure_attr}; SameSite=Strict; Path=/api/admin; Max-Age=0")
+}
+
+/// (access_cookie, refresh_cookie, csrf_cookie, legacy_csrf_expire,
+/// csrf_token_value). CSRF token'ını response body'sine de koyabilmek için
+/// raw değer olarak da döndürüyoruz (frontend ilk login'de header'a
+/// yerleştirebilir ya da cookie'den de okuyabilir).
+fn auth_cookies(access: &str, refresh: &str, is_production: bool) -> ([String; 4], String) {
     let csrf_token = csrf::generate_token();
     let cookies = [
         build_cookie(
@@ -114,11 +124,12 @@ fn auth_cookies(access: &str, refresh: &str, is_production: bool) -> ([String; 3
             is_production,
         ),
         build_csrf_cookie(&csrf_token, ACCESS_TTL_SECS, is_production),
+        build_legacy_csrf_expire(is_production),
     ];
     (cookies, csrf_token)
 }
 
-fn clear_auth_cookies(is_production: bool) -> [String; 3] {
+fn clear_auth_cookies(is_production: bool) -> [String; 4] {
     [
         build_cookie(
             ACCESS_COOKIE_NAME,
@@ -135,10 +146,11 @@ fn clear_auth_cookies(is_production: bool) -> [String; 3] {
             is_production,
         ),
         build_csrf_cookie("", 0, is_production),
+        build_legacy_csrf_expire(is_production),
     ]
 }
 
-fn json_with_cookies(body: Value, cookies: [String; 3]) -> Response {
+fn json_with_cookies(body: Value, cookies: [String; 4]) -> Response {
     let mut response = Json(body).into_response();
     let headers = response.headers_mut();
     for cookie in cookies {

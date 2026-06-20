@@ -50,26 +50,39 @@ fn build_csrf_cookie(value: &str, max_age: i64, secure: bool) -> String {
     )
 }
 
-/// ([access_cookie, csrf_cookie], csrf_token_raw). Raw CSRF token
-/// body'ye de eklenir ki frontend cookie parse'ı problem yaşarsa
+/// Migration helper: pre-fix CSRF cookie Path=/api ile set ediliyordu. Aynı
+/// isimde ama farklı path'li cookie'ler tarayıcı tarafından AYRI kayıt olarak
+/// tutulur; yeni Path=/ cookie'sini set etmek eskisini silmez. Bu fonksiyon
+/// eski path'teki cookie'yi explicit `Max-Age=0` ile expire eder. Login,
+/// register, nickname, logout response'larına ekleniyor — kullanıcı sadece
+/// bir auth bootstrap turundan geçince stale cookie otomatik temizleniyor.
+fn build_legacy_csrf_expire(secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!("{CSRF_COOKIE_NAME}={secure_attr}; SameSite=Strict; Path=/api; Max-Age=0")
+}
+
+/// ([access_cookie, csrf_cookie, legacy_csrf_expire], csrf_token_raw). Raw
+/// CSRF token body'ye de eklenir ki frontend cookie parse'ı problem yaşarsa
 /// fallback olarak okuyabilsin.
-fn auth_cookies(token: &str, max_age: i64, is_production: bool) -> ([String; 2], String) {
+fn auth_cookies(token: &str, max_age: i64, is_production: bool) -> ([String; 3], String) {
     let csrf_token = csrf::generate_token();
     let cookies = [
         build_cookie(ACCESS_COOKIE_NAME, token, ACCESS_COOKIE_PATH, max_age, is_production),
         build_csrf_cookie(&csrf_token, max_age, is_production),
+        build_legacy_csrf_expire(is_production),
     ];
     (cookies, csrf_token)
 }
 
-fn clear_auth_cookies(is_production: bool) -> [String; 2] {
+fn clear_auth_cookies(is_production: bool) -> [String; 3] {
     [
         build_cookie(ACCESS_COOKIE_NAME, "", ACCESS_COOKIE_PATH, 0, is_production),
         build_csrf_cookie("", 0, is_production),
+        build_legacy_csrf_expire(is_production),
     ]
 }
 
-fn json_with_cookies(body: serde_json::Value, cookies: [String; 2]) -> Response {
+fn json_with_cookies(body: serde_json::Value, cookies: [String; 3]) -> Response {
     let mut response = Json(body).into_response();
     let headers = response.headers_mut();
     for cookie in cookies {
